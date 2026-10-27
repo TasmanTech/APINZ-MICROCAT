@@ -1,0 +1,55 @@
+The endpoint the dashboard button calls:
+
+# -*- coding: utf-8 -*-
+r"""
+PARTLY DESK - the screen.   Start:  START PARTLY DESK.bat   then open http://localhost:5077
+
+This file is only the web page and its buttons. Every rule, rate and price lives in
+desk_core.py - if a number on the screen looks wrong, that is the file to read.
+"""
+import json
+import os
+import sys
+import traceback
+
+from flask import Flask, jsonify, request, Response
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import desk_core as core
+ROOT = core.ROOT
+import desk_private
+import desk_euro
+import desk_staff
+import desk_platform                                       # noqa: E402
+
+app = Flask(__name__)
+
+
+def guarded(fn):
+    """A failed step must SAY it failed, on the screen, in words."""
+    def wrap(*a, **k):
+        try:
+            return fn(*a, **k)
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({"error": f"{type(e).__name__}: {str(e)[:300]}"}), 200
+    wrap.__name__ = fn.__name__
+    return wrap
+
+
+@app.get("/")
+def home():
+    with open(os.path.join(HERE, "desk_page.html"), encoding="utf-8") as f:
+        return Response(f.read(), mimetype="text/html")
+
+
+def _open_refs():
+    try:
+        with open(os.path.join(HERE, "open_now.json"), encoding="utf-8") as f:
+            return set(json.load(f).get("refs") or [])
+    except Exception:
+        return None
+
+
+@app.get("/api/jobs")
