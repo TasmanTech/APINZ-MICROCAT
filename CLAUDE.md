@@ -50,6 +50,7 @@ Flow: desk button `findMicrocat()` -> `partly_desk.py` -> `desk_finder.find_numb
 ## Known open issues (see `MICROCAT_LOGIN_FOR_CODER.md`)
 
 1. No credentials are configured, so `sign_in()` silently does nothing. Auto sign-in has succeeded 0 times in the log. The 29 Sep `errorCode=1` means the credentials were refused. Credentials now come from `MICROCAT_USERNAME` / `MICROCAT_PASSWORD`: a real environment variable is used first, then the git-ignored `.env` beside `microcat_runner.py` (template: `.env.example`). This replaced `microcat_credentials.json`; the log and the older `.md` notes still use the old name.
-2. A skipped auto sign-in should be logged loudly.
-3. `sign_in()` uses `fill()`, while the rest of the file types real keystrokes with `keyboard.type(..., delay=35)`.
-4. The `signed_in()` docstring and the log message near line 2204 still say "the runner never types credentials". That rule was reversed on 1 Oct 2026.
+2. ~~A skipped auto sign-in should be logged loudly.~~ Done 28 Oct 2026. Also: a refused login is written to `microcat_signin_refused.json` and not retried until `.env` is saved again, the username changes, or the file is deleted, so scheduled passes can't lock the account. Success is now judged by the Start tile appearing (`_start_tile()`), not by page text.
+3. `sign_in()` uses `fill()`, while the rest of the file types real keystrokes with `keyboard.type(..., delay=35)`. Left as is on purpose: there's no evidence it causes refusals, and it shouldn't be changed just to get past a vendor's bot check. Change it only if testing shows the form ignores `fill()`.
+4. ~~The `signed_in()` docstring and the `_run_locked()` log message still say "the runner never types credentials".~~ Fixed 28 Oct 2026.
+5. Before adding credentials: the Microcat session is currently under a named person's login. Confirm with Infomedia (and that person) that automated sign-in is allowed, or get a service account.

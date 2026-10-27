@@ -181,6 +181,9 @@ def a_human_is_waiting(max_age_seconds=300):
 # A person told something they cannot act on presses the button again, which
 # makes it worse.
 BUSY_FILE = os.path.join(HERE, "microcat_busy.json")
+# Written when Infomedia does not accept the stored login. While it matches the
+# current credentials, sign_in() will not try again - see sign_in().
+SIGNIN_REFUSED = os.path.join(HERE, "microcat_signin_refused.json")
 
 
 def busy_with(job=None, lines=None, clear=False):
@@ -369,13 +372,31 @@ class Microcat:
             return ""
 
     def signed_in(self):
-        """A login screen means a PERSON has to sign in - the runner never types
-        credentials (house rule). Report it and stop; do not half-run the queue."""
+        """Is this page past the login screen? Detection only - whether to sign
+        in is sign_in()'s business (since 1 Oct 2026 the runner does).
+
+        28 Oct 2026: "vin" was tested as a substring, so "driving", "saving" or
+        "providing" on a login page counted as signed in. It is a whole word now.
+        This is a rough reading of the text; sign_in() and epc() trust only the
+        Start tile."""
         t = self.text().lower()
         if any(k in t for k in ("sign in", "log in", "username", "password")) \
-                and "vin" not in t:
+                and not re.search(r"\bvin\b", t):
             return False
         return bool(t.strip())
+
+    def _start_tile(self, seconds=0):
+        """The landing page's Start button, waiting up to `seconds` for it. The
+        one honest proof of a session: it is what epc() has to click."""
+        deadline = time.time() + seconds
+        while True:
+            try:
+                b = self.page.query_selector("button:has-text('Start')")
+            except Exception:
+                b = None
+            if b or time.time() >= deadline:
+                return b
+            self.page.wait_for_timeout(1000)
 
     def _credentials(self):
         """The Infomedia sign-in, from MICROCAT_USERNAME / MICROCAT_PASSWORD in .env
@@ -409,26 +430,61 @@ class Microcat:
         his own login - so it signs in, from a file that is git-ignored and never
         passes through a conversation. PartsLink24 has worked this way for weeks.
 
-        It still refuses to guess: no credentials file, no attempt, and it says
-        so rather than sitting on a login screen pretending to work.
+        It still refuses to guess: no credentials, no attempt - and since 28 Oct
+        2026 it SAYS so, loudly. The skip used to be silent, which is why the log
+        holds eight "automatic sign-in did not work" failures since 1 Oct and not
+        one actual attempt: there were never any credentials to try.
+
+        ONE REFUSAL, NOT ONE PER PASS.  28 Oct 2026. The scheduler runs this every
+        10-15 minutes. A wrong or expired password resubmitted on every pass is
+        how an account gets locked - and the account is the one people sign in to
+        by hand as well. So a login that does not take is written to
+        SIGNIN_REFUSED and NOT retried until the credentials change (the .env is
+        saved again, or a different username) or a person deletes that file.
+        A crash or timeout is not a refusal and is not recorded.
+
+        SUCCESS IS THE START TILE.  28 Oct 2026. It used to wait a fixed 9 s and
+        read the page text, so a two-factor or "verify your email" page - no login
+        words on it - was logged as "signed in automatically". Now it is only
+        signed in when the Start button epc() needs has actually appeared.
         """
         cred = self._credentials()
         if not cred:
+            log("  *** AUTO SIGN-IN SKIPPED: no Microcat credentials configured. Put "
+                "MICROCAT_USERNAME and MICROCAT_PASSWORD in .env beside "
+                "microcat_runner.py (copy .env.example), or sign in by hand in "
+                "the API HELPER window.")
             return False
         user, pwd = cred
+        stamp = self._cred_stamp(user)
+        refused = self._refusal()
+        if refused and refused.get("stamp") == stamp:
+            log("  *** AUTO SIGN-IN NOT RETRIED: Infomedia did not accept this login "
+                f"at {refused.get('when', '?')} ({refused.get('why', '?')}). Fix the "
+                "credentials in .env, or delete microcat_signin_refused.json to "
+                "try again. Retrying every pass would lock the account.")
+            return False
         lp = self.page
         try:
             lp.goto(BASE, wait_until="domcontentloaded", timeout=90000)
             lp.wait_for_timeout(5000)
+            if self._start_tile():
+                log("  sign-in: the Start tile is already there - session is live")
+                self._clear_refusal()
+                return True
             # the form is the ordinary Infomedia one: an identifier, a password,
             # a submit. Found by type first, by name second - their markup moves.
+            # A bare text box is only trusted as the username when a password box
+            # is on the same page - otherwise it may be a search field.
             u = (lp.query_selector("input[type=email]")
                  or lp.query_selector("input[name*=user i]")
                  or lp.query_selector("input[name*=email i]")
-                 or lp.query_selector("input[type=text]"))
+                 or (lp.query_selector("input[type=text]")
+                     if lp.query_selector("input[type=password]") else None))
             if not u:
-                log("  sign-in: no username box on the page - already signed in?")
-                return self.signed_in()
+                log("  sign-in: no username box and no Start tile - neither a login "
+                    "page nor a session. Nothing typed. url=" + str(lp.url)[:80])
+                return False
             u.fill(user)
             w = lp.query_selector("input[type=password]")
             if not w:
@@ -442,7 +498,13 @@ class Microcat:
                         break
                 w = lp.query_selector("input[type=password]")
             if not w:
-                log("  sign-in: no password box appeared")
+                # The username went in and no password step followed - an
+                # unknown account, or a flow this does not know. Same rule as a
+                # refusal: say it once, do not repeat it every pass.
+                self._record_refusal(stamp, "no password box after the username")
+                log("  *** sign-in: no password box appeared after the username - "
+                    "not retrying until the credentials change. url="
+                    + str(lp.url)[:80])
                 return False
             w.fill(pwd)
             for sel in ("button[type=submit]", "button:has-text('Sign in')",
@@ -453,16 +515,67 @@ class Microcat:
                     break
             else:
                 lp.keyboard.press("Enter")
-            lp.wait_for_timeout(9000)
-            ok = self.signed_in()
-            log("  signed in to Microcat automatically" if ok else
-                "  sign-in did not take - Infomedia rejected it. Check the "
-                "MICROCAT_PASSWORD in .env (it returned errorCode=1 "
-                "on 29 Sep, which means the credentials were refused).")
-            return ok
+            # The login may hop through the identity provider and back, which can
+            # replace the tab; look for the landing page wherever it ended up.
+            deadline = time.time() + 45
+            while time.time() < deadline:
+                lp.wait_for_timeout(1500)
+                home = next((p for p in self.ctx.pages
+                             if "superservice" in (p.url or "").lower()), lp)
+                self.page = home
+                if self._start_tile():
+                    log("  signed in to Microcat automatically")
+                    self._clear_refusal()
+                    return True
+            pw_back = bool(self.page.query_selector("input[type=password]"))
+            why = ("the login form came back - username or password refused"
+                   if pw_back else
+                   "no Start tile after login - a two-factor or verification "
+                   "step, or a page this does not know")
+            self._record_refusal(stamp, why)
+            log(f"  *** SIGN-IN DID NOT TAKE: {why}. url={str(self.page.url)[:80]}. "
+                "Not retrying until the credentials change, or "
+                "microcat_signin_refused.json is deleted.")
+            return False
         except Exception as e:
+            # A crash or timeout says nothing about the credentials, so it is
+            # NOT recorded as a refusal - the next pass may simply work.
             log("  sign-in failed: %s %s" % (type(e).__name__, str(e)[:90]))
             return False
+
+    def _cred_stamp(self, user):
+        """What the refusal is remembered against: the username and when .env was
+        last saved. No password, and nothing derived from it, goes to disk. A
+        password set as a real environment variable changes neither, so after
+        fixing one of those, delete SIGNIN_REFUSED by hand."""
+        try:
+            mtime = os.path.getmtime(os.path.join(HERE, ".env"))
+        except OSError:
+            mtime = 0
+        return f"{user}|{mtime:.0f}"
+
+    def _refusal(self):
+        try:
+            with open(SIGNIN_REFUSED, encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return None
+
+    def _record_refusal(self, stamp, why):
+        try:
+            with open(SIGNIN_REFUSED, "w", encoding="utf-8") as fh:
+                json.dump({"stamp": stamp, "why": why,
+                           "when": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")},
+                          fh, indent=1)
+        except Exception:
+            pass
+
+    def _clear_refusal(self):
+        try:
+            if os.path.exists(SIGNIN_REFUSED):
+                os.remove(SIGNIN_REFUSED)
+        except Exception:
+            pass
 
     def check(self):
         self.page.goto(BASE, wait_until="domcontentloaded", timeout=90000)
@@ -526,13 +639,16 @@ class Microcat:
             # for a human.
             self.page = lp
             if self.sign_in():
-                lp.wait_for_timeout(3000)
-                btn = lp.query_selector("button:has-text('Start')")
+                # sign_in() may have ended on a different tab (the login can
+                # hop through the identity provider), so carry on from its page.
+                lp = self.page
+                btn = self._start_tile(seconds=5)
             if not btn:
                 raise RuntimeError(
                     "the API HELPER window is not signed in to Microcat and the "
-                    "automatic sign-in did not work. Put MICROCAT_USERNAME and "
-                    "MICROCAT_PASSWORD in .env, or sign in on that window once.")
+                    "automatic sign-in did not work - the log line above says "
+                    "why. Put MICROCAT_USERNAME and MICROCAT_PASSWORD in .env, or "
+                    "sign in on that window once.")
         btn.click()
         for _ in range(20):
             lp.wait_for_timeout(1500)
@@ -2303,8 +2419,12 @@ def _run_locked(q, limit):
             except Exception:
                 pass
             log(f"*** CANNOT ENTER THE MICROCAT EPC: {str(e)[:160]}")
-            log("    If it says not signed in: sign in once by hand in the API "
-                "HELPER window. The runner never types credentials.")
+            # 28 Oct 2026: this used to end "The runner never types credentials" -
+            # the rule before 1 Oct, when auto sign-in was added. Stale advice
+            # sends the next reader looking in the wrong place.
+            log("    If it says not signed in: the sign-in line above says why. "
+                "Fix MICROCAT_USERNAME / MICROCAT_PASSWORD in .env, or sign in "
+                "once by hand in the API HELPER window.")
             return 2
         for req in q[:limit]:
             try:
