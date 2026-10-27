@@ -24,6 +24,16 @@ HOW IT RUNS, END TO END
     uncertain is listed beside the line and left for a person - the same rule
     as PartsLink24, because a catalogue cannot reliably tell R/H from L/H.
 
+NO VIN: THE BODY-TYPE BUTTON (added 28 Oct 2026, not live yet)
+
+    "Find numbers (body type)" -> desk_finder.find_numbers_by_body(job)
+    -> microcat_runner.run_by_body(). For quotes with NO VIN only. It picks
+    the car by make / model / body / year, and EVERY number it finds is a
+    suggestion in the yellow Confirm box - never filled in, never learned -
+    because without the VIN Microcat cannot apply build date or model code.
+    It refuses to run until the Microcat model screen has been mapped
+    (python microcat_runner.py --explore-model, signed in).
+
 WHAT IS IN THE ZIP
 
   desk_finder.py                        9987 bytes

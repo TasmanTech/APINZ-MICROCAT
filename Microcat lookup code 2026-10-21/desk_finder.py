@@ -178,3 +178,83 @@ def find_numbers(job, human=True, force_microcat=False):
     core.log(job, f"FINDER {out}")
     core.run_system(j)
     return out
+
+
+def _body_details(j):
+    """make / model / body / year for a body-type lookup, or None if short.
+
+    28 Oct 2026: WHICH JOB FIELDS HOLD BODY TYPE AND YEAR IS NOT CONFIRMED YET.
+    "body" and "year" below are placeholders until desk_core's job fields are
+    checked - this is the one place to change when they are. Missing any of
+    the four means no lookup, never a guess."""
+    v = {"make": (core.vehicle_make(j) or "").upper(),
+         "model": str(j.get("car") or "").strip(),
+         "body": str(j.get("body") or "").strip(),
+         "year": str(j.get("year") or "").strip()}
+    return v if all(v.values()) else None
+
+
+def find_numbers_by_body(job):
+    """THE NO-VIN BUTTON: "Find numbers (body type)".  28 Oct 2026.
+
+    Morgan, 28 Oct 2026: a body-type lookup for quotes with no VIN, on its OWN
+    button. It never fills in a number. Without a VIN Microcat cannot apply
+    build date or model code, so everything it finds goes to the yellow Confirm
+    box for a person - the same rule as PROPOSED everywhere else. A job WITH a
+    VIN is sent back to the Microcat button, which is the better answer.
+    """
+    j = core.load_job(job)
+    if j.get("vin"):
+        return {"asked": 0, "error": "This job has a VIN - use Find numbers (Microcat). "
+                                     "The body-type lookup is only for quotes with no VIN."}
+    make = (core.vehicle_make(j) or "").upper()
+    if make and make not in MICROCAT_MAKES:
+        return {"asked": 0, "error":
+                f"Microcat only holds Toyota and Lexus - it cannot identify a {make}. "
+                f"Nothing was asked and no line has been marked NOT FOUND."}
+    vehicle = _body_details(j)
+    if not vehicle:
+        return {"asked": 0, "error": "Not enough vehicle detail for a body-type lookup - "
+                                     "it needs make, model, body type and year. "
+                                     "Nothing was asked."}
+    need = [l for l in j["lines"] if not core.pn_of(l) and not l.get("kit")]
+    if not need:
+        return {"asked": 0, "note": "every line already has a number"}
+    _pf, mr = _engine()
+    pdjob = f"PB{job}_{datetime.datetime.now():%H%M%S}"
+    core.log(job, f"FINDER (body type) asked Microcat for {len(need)} line(s) as {pdjob}")
+    res = mr.run_by_body(pdjob, vehicle,
+                         [{"line": str(l["n"]), "description": l["description"], "qty": l["qty"]}
+                          for l in need])
+    out = {"asked": len(need), "confirmed": 0, "proposed": 0, "not_found": 0}
+    if res.get("error"):
+        # NOT SEARCHED IS NOT NOT FOUND - the same rule as find_numbers().
+        for l in need:
+            l.setdefault("notes", {})["finder"] = ("Body-type lookup has NOT looked at this "
+                                                   "line yet - " + res["error"][:160])
+        out["unanswered"] = len(need)
+        out["error"] = "Body-type lookup did NOT run - nothing was searched. " + res["error"]
+        core.save_job(j)
+        core.log(job, f"FINDER (body type) NOT ANSWERED {pdjob}: {res['error'][:160]}")
+        return out
+    rows = {str(r.get("line")): r for r in res.get("rows") or []}
+    for l in need:
+        r = rows.get(str(l["n"])) or {}
+        conf, num = str(r.get("confidence", "")).upper(), str(r.get("oem_no") or "").strip()
+        note = str(r.get("note") or "")[:160]
+        # Only PROPOSED can come back from run_by_body(); anything else with a
+        # number is treated as PROPOSED too, so this button can never fill one in.
+        if num and conf != "NOT_FOUND":
+            if not core.pn_of(l):
+                core.apply_proposal(l, num, f"Body-type lookup offered {num}. {note}")
+            l.setdefault("notes", {})["finder"] = (f"Body type (no VIN) PROPOSES {num} - "
+                                                   f"press Confirm if right. {note}").strip()
+            out["proposed"] += 1
+        else:
+            l.setdefault("notes", {})["finder"] = ("Body type (no VIN): NOT FOUND. "
+                                                   + note).strip()
+            out["not_found"] += 1
+    core.save_job(j)
+    core.log(job, f"FINDER (body type) {out}")
+    core.run_system(j)
+    return out

@@ -1,3 +1,4 @@
 # Credentials - never commit
 .env
 microcat_credentials.json
+.env.example
