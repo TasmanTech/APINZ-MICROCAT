@@ -1,3 +1,5 @@
 # Credentials - never commit
 .env
 microcat_credentials.json
+# Runtime state - a refused auto sign-in, per machine
+microcat_signin_refused.json

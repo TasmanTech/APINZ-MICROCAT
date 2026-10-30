@@ -48,6 +48,7 @@ other make is left in the queue untouched (partslink24 requests are not ours).
 
     python microcat_runner.py --check              # is API HELPER signed in?
     python microcat_runner.py --explore <VIN>      # dump the page, pin selectors
+    python microcat_runner.py --explore-model      # dump Identify Vehicle (body-type pickers)
     python microcat_runner.py --status             # queue at a glance
     python microcat_runner.py --run                # work the queue (live jobs)
     python microcat_runner.py --run --all          # include expired/backlog
@@ -180,6 +181,9 @@ def a_human_is_waiting(max_age_seconds=300):
 # A person told something they cannot act on presses the button again, which
 # makes it worse.
 BUSY_FILE = os.path.join(HERE, "microcat_busy.json")
+# Written when Infomedia does not accept the stored login. While it matches the
+# current credentials, sign_in() will not try again - see sign_in().
+SIGNIN_REFUSED = os.path.join(HERE, "microcat_signin_refused.json")
 
 
 def busy_with(job=None, lines=None, clear=False):
@@ -368,13 +372,31 @@ class Microcat:
             return ""
 
     def signed_in(self):
-        """A login screen means a PERSON has to sign in - the runner never types
-        credentials (house rule). Report it and stop; do not half-run the queue."""
+        """Is this page past the login screen? Detection only - whether to sign
+        in is sign_in()'s business (since 1 Oct 2026 the runner does).
+
+        28 Oct 2026: "vin" was tested as a substring, so "driving", "saving" or
+        "providing" on a login page counted as signed in. It is a whole word now.
+        This is a rough reading of the text; sign_in() and epc() trust only the
+        Start tile."""
         t = self.text().lower()
         if any(k in t for k in ("sign in", "log in", "username", "password")) \
-                and "vin" not in t:
+                and not re.search(r"\bvin\b", t):
             return False
         return bool(t.strip())
+
+    def _start_tile(self, seconds=0):
+        """The landing page's Start button, waiting up to `seconds` for it. The
+        one honest proof of a session: it is what epc() has to click."""
+        deadline = time.time() + seconds
+        while True:
+            try:
+                b = self.page.query_selector("button:has-text('Start')")
+            except Exception:
+                b = None
+            if b or time.time() >= deadline:
+                return b
+            self.page.wait_for_timeout(1000)
 
     def _credentials(self):
         """The Infomedia sign-in, from MICROCAT_USERNAME / MICROCAT_PASSWORD in .env
@@ -408,26 +430,61 @@ class Microcat:
         his own login - so it signs in, from a file that is git-ignored and never
         passes through a conversation. PartsLink24 has worked this way for weeks.
 
-        It still refuses to guess: no credentials file, no attempt, and it says
-        so rather than sitting on a login screen pretending to work.
+        It still refuses to guess: no credentials, no attempt - and since 28 Oct
+        2026 it SAYS so, loudly. The skip used to be silent, which is why the log
+        holds eight "automatic sign-in did not work" failures since 1 Oct and not
+        one actual attempt: there were never any credentials to try.
+
+        ONE REFUSAL, NOT ONE PER PASS.  28 Oct 2026. The scheduler runs this every
+        10-15 minutes. A wrong or expired password resubmitted on every pass is
+        how an account gets locked - and the account is the one people sign in to
+        by hand as well. So a login that does not take is written to
+        SIGNIN_REFUSED and NOT retried until the credentials change (the .env is
+        saved again, or a different username) or a person deletes that file.
+        A crash or timeout is not a refusal and is not recorded.
+
+        SUCCESS IS THE START TILE.  28 Oct 2026. It used to wait a fixed 9 s and
+        read the page text, so a two-factor or "verify your email" page - no login
+        words on it - was logged as "signed in automatically". Now it is only
+        signed in when the Start button epc() needs has actually appeared.
         """
         cred = self._credentials()
         if not cred:
+            log("  *** AUTO SIGN-IN SKIPPED: no Microcat credentials configured. Put "
+                "MICROCAT_USERNAME and MICROCAT_PASSWORD in .env beside "
+                "microcat_runner.py (copy .env.example), or sign in by hand in "
+                "the API HELPER window.")
             return False
         user, pwd = cred
+        stamp = self._cred_stamp(user)
+        refused = self._refusal()
+        if refused and refused.get("stamp") == stamp:
+            log("  *** AUTO SIGN-IN NOT RETRIED: Infomedia did not accept this login "
+                f"at {refused.get('when', '?')} ({refused.get('why', '?')}). Fix the "
+                "credentials in .env, or delete microcat_signin_refused.json to "
+                "try again. Retrying every pass would lock the account.")
+            return False
         lp = self.page
         try:
             lp.goto(BASE, wait_until="domcontentloaded", timeout=90000)
             lp.wait_for_timeout(5000)
+            if self._start_tile():
+                log("  sign-in: the Start tile is already there - session is live")
+                self._clear_refusal()
+                return True
             # the form is the ordinary Infomedia one: an identifier, a password,
             # a submit. Found by type first, by name second - their markup moves.
+            # A bare text box is only trusted as the username when a password box
+            # is on the same page - otherwise it may be a search field.
             u = (lp.query_selector("input[type=email]")
                  or lp.query_selector("input[name*=user i]")
                  or lp.query_selector("input[name*=email i]")
-                 or lp.query_selector("input[type=text]"))
+                 or (lp.query_selector("input[type=text]")
+                     if lp.query_selector("input[type=password]") else None))
             if not u:
-                log("  sign-in: no username box on the page - already signed in?")
-                return self.signed_in()
+                log("  sign-in: no username box and no Start tile - neither a login "
+                    "page nor a session. Nothing typed. url=" + str(lp.url)[:80])
+                return False
             u.fill(user)
             w = lp.query_selector("input[type=password]")
             if not w:
@@ -441,7 +498,13 @@ class Microcat:
                         break
                 w = lp.query_selector("input[type=password]")
             if not w:
-                log("  sign-in: no password box appeared")
+                # The username went in and no password step followed - an
+                # unknown account, or a flow this does not know. Same rule as a
+                # refusal: say it once, do not repeat it every pass.
+                self._record_refusal(stamp, "no password box after the username")
+                log("  *** sign-in: no password box appeared after the username - "
+                    "not retrying until the credentials change. url="
+                    + str(lp.url)[:80])
                 return False
             w.fill(pwd)
             for sel in ("button[type=submit]", "button:has-text('Sign in')",
@@ -452,16 +515,67 @@ class Microcat:
                     break
             else:
                 lp.keyboard.press("Enter")
-            lp.wait_for_timeout(9000)
-            ok = self.signed_in()
-            log("  signed in to Microcat automatically" if ok else
-                "  sign-in did not take - Infomedia rejected it. Check the "
-                "MICROCAT_PASSWORD in .env (it returned errorCode=1 "
-                "on 29 Sep, which means the credentials were refused).")
-            return ok
+            # The login may hop through the identity provider and back, which can
+            # replace the tab; look for the landing page wherever it ended up.
+            deadline = time.time() + 45
+            while time.time() < deadline:
+                lp.wait_for_timeout(1500)
+                home = next((p for p in self.ctx.pages
+                             if "superservice" in (p.url or "").lower()), lp)
+                self.page = home
+                if self._start_tile():
+                    log("  signed in to Microcat automatically")
+                    self._clear_refusal()
+                    return True
+            pw_back = bool(self.page.query_selector("input[type=password]"))
+            why = ("the login form came back - username or password refused"
+                   if pw_back else
+                   "no Start tile after login - a two-factor or verification "
+                   "step, or a page this does not know")
+            self._record_refusal(stamp, why)
+            log(f"  *** SIGN-IN DID NOT TAKE: {why}. url={str(self.page.url)[:80]}. "
+                "Not retrying until the credentials change, or "
+                "microcat_signin_refused.json is deleted.")
+            return False
         except Exception as e:
+            # A crash or timeout says nothing about the credentials, so it is
+            # NOT recorded as a refusal - the next pass may simply work.
             log("  sign-in failed: %s %s" % (type(e).__name__, str(e)[:90]))
             return False
+
+    def _cred_stamp(self, user):
+        """What the refusal is remembered against: the username and when .env was
+        last saved. No password, and nothing derived from it, goes to disk. A
+        password set as a real environment variable changes neither, so after
+        fixing one of those, delete SIGNIN_REFUSED by hand."""
+        try:
+            mtime = os.path.getmtime(os.path.join(HERE, ".env"))
+        except OSError:
+            mtime = 0
+        return f"{user}|{mtime:.0f}"
+
+    def _refusal(self):
+        try:
+            with open(SIGNIN_REFUSED, encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return None
+
+    def _record_refusal(self, stamp, why):
+        try:
+            with open(SIGNIN_REFUSED, "w", encoding="utf-8") as fh:
+                json.dump({"stamp": stamp, "why": why,
+                           "when": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")},
+                          fh, indent=1)
+        except Exception:
+            pass
+
+    def _clear_refusal(self):
+        try:
+            if os.path.exists(SIGNIN_REFUSED):
+                os.remove(SIGNIN_REFUSED)
+        except Exception:
+            pass
 
     def check(self):
         self.page.goto(BASE, wait_until="domcontentloaded", timeout=90000)
@@ -525,13 +639,16 @@ class Microcat:
             # for a human.
             self.page = lp
             if self.sign_in():
-                lp.wait_for_timeout(3000)
-                btn = lp.query_selector("button:has-text('Start')")
+                # sign_in() may have ended on a different tab (the login can
+                # hop through the identity provider), so carry on from its page.
+                lp = self.page
+                btn = self._start_tile(seconds=5)
             if not btn:
                 raise RuntimeError(
                     "the API HELPER window is not signed in to Microcat and the "
-                    "automatic sign-in did not work. Put MICROCAT_USERNAME and "
-                    "MICROCAT_PASSWORD in .env, or sign in on that window once.")
+                    "automatic sign-in did not work - the log line above says "
+                    "why. Put MICROCAT_USERNAME and MICROCAT_PASSWORD in .env, or "
+                    "sign in on that window once.")
         btn.click()
         for _ in range(20):
             lp.wait_for_timeout(1500)
@@ -863,6 +980,31 @@ class Microcat:
         raise VinNotFound(
             "Microcat has no vehicle for " + str(v)
             + " (tried " + ", ".join(tried) + ")")
+
+    def identify_by_model(self, make, model, body, year):
+        """Open the car by make / model / body / year - NO VIN.  28 Oct 2026.
+
+        For quotes that arrive with no VIN at all (Morgan, 28 Oct 2026: a body
+        type lookup as its own button, never a replacement for the VIN). Without
+        the VIN Microcat cannot apply build date or model code, so whatever this
+        finds is only ever PROPOSED - see _proposed_only().
+
+        NOT WIRED YET, AND IT SAYS SO. Every lookup so far has opened the car
+        through #genericSearchInput with a VIN or chassis number. The model /
+        body / year pickers on the Identify Vehicle screen have never been
+        mapped, and guessed selectors are exactly the kind of code that "works"
+        on the wrong car. Until someone signed in runs
+            python microcat_runner.py --explore-model
+        and the selectors are pinned from that capture, this refuses - and
+        refusing means nothing is searched and nothing is marked NOT FOUND.
+
+        When it is wired it must keep the same proof as vin(): the title
+        Microcat renders has to name this model and year, or it raises, and
+        more than one matching variant is a person's call, not ours.
+        """
+        raise RuntimeError(
+            "body-type lookup is not wired yet - the Microcat model screen has "
+            "not been mapped (run microcat_runner.py --explore-model signed in)")
 
     def _search_identifier(self, p, ident, tried):
         """One identifier, every spelling of it. Returns the vehicle URL or None."""
@@ -1289,6 +1431,52 @@ def base_number(num):
     return m.group(1) if m else str(num).upper()
 
 
+def _year_of(s):
+    """The four-digit year in a grid date ("04/2020" -> 2020), or None."""
+    m = re.search(r"\b(19|20)\d{2}\b", str(s or ""))
+    return int(m.group(0)) if m else None
+
+
+def _rows_for_year(rows, year):
+    """Drop grid rows whose production range plainly excludes this year.
+
+    Body-type lookups only (28 Oct 2026). With a VIN, Microcat filters by build
+    date itself; without one the grid holds every year of the model, so this is
+    the one narrowing we can do honestly. A row whose dates cannot be read is
+    KEPT - an unreadable date is not evidence the part does not fit."""
+    try:
+        year = int(year)
+    except (TypeError, ValueError):
+        return rows
+    out = []
+    for r in rows or []:
+        start, end = _year_of(r.get("from")), _year_of(r.get("to"))
+        if (start and start > year) or (end and end < year):
+            continue
+        out.append(r)
+    return out
+
+
+def _proposed_only(rows, vehicle):
+    """NOTHING FOUND WITHOUT A VIN IS CONFIRMED.  28 Oct 2026.
+
+    A body type covers several model codes and production periods, and the
+    VIN is what Microcat uses to choose between them. So on this path every
+    CONFIRMED row - the matcher's pick AND a learned mapping, which was learned
+    on some other car's VIN - becomes PROPOSED for a person to check. Done
+    here, once, on the finished rows, so a branch added to work_job() later
+    cannot slip a CONFIRMED past it."""
+    car = " ".join(str(vehicle.get(k) or "") for k in
+                   ("make", "model", "body", "year")).strip()
+    for r in rows:
+        if str(r.get("confidence", "")).upper() == "CONFIRMED" and r.get("oem_no"):
+            r["confidence"] = "PROPOSED"
+            r["note"] = (f"Body-type lookup, NO VIN ({car}): Microcat could not "
+                         f"apply build date or model code. Check before "
+                         f"confirming. " + str(r.get("note") or "")).strip()
+    return rows
+
+
 def _pnc_hints(desc, make="", model=""):
     """Candidate factory groups for this description, off our own stock. Never
     fatal: the Elephant being unreachable must not stop a Microcat pass."""
@@ -1692,8 +1880,13 @@ def work_job(mc, req):
     # A real VIN is 11-17 characters of the VIN alphabet (no I, O or Q). Less
     # than that is a broken record, not a car - so it is reported once, taken
     # out of the queue, and left for a person to correct on the quote.
+    # THE BODY-TYPE PATH  (28 Oct 2026). A request from run_by_body() has no VIN
+    # on purpose and carries the vehicle instead. It is never in the queue and
+    # never written to results\ - see run_by_body().
+    by_body = req.get("lookup") == "body"
+    vehicle = req.get("vehicle") or {}
     _vin = re.sub(r"[^A-HJ-NPR-Z0-9]", "", str(req.get("vin") or "").upper())
-    if len(_vin) < 11:
+    if not by_body and len(_vin) < 11:
         log(f"  {job}: VIN {req.get('vin')!r} is not a VIN - nothing to look "
             f"up. Needs a human to fix the VIN on the quote.")
         rows = [{"line": l.get("line"), "description": l.get("description"),
@@ -1704,29 +1897,44 @@ def work_job(mc, req):
                 for l in req.get("lines", [])]
         return _write_result(job, req, "", rows)
 
-    log(f"  {job}: VIN {req.get('vin')} ({len(req.get('lines', []))} line(s))")
-    _jobwit = (attempt_log.Line("partscheck", job, "job")
-               if attempt_log else None)
-    try:
-        vurl = mc.vin(req["vin"])
+    if by_body:
+        # Identification failing RAISES to run_by_body(), which reports it as
+        # "not searched" - never as NOT_FOUND on every line.
+        log(f"  {job}: BODY TYPE {vehicle} ({len(req.get('lines', []))} line(s))")
+        vurl = mc.identify_by_model(vehicle.get("make"), vehicle.get("model"),
+                                    vehicle.get("body"), vehicle.get("year"))
         log(f"      vehicle: {mc.page.title()[:80]}")
-        if _jobwit:
-            _jobwit.ok("vin", mc.page.title()[:70], value=req.get("vin"))
-    except VinNotFound as e:
-        if _jobwit:
-            _jobwit.miss("vin", str(e)[:120])
-        # A real answer from the authority. Recorded as NOT_FOUND on every line
-        # so the job leaves the queue instead of being retried nightly for ever -
-        # which is how 148 requests piled up unnoticed.
-        log(f"      {e}")
-        vurl = ""
-        rows = [{"line": l.get("line"), "description": l.get("description", ""),
-                 "oem_no": "", "confidence": "NOT_FOUND",
-                 "note": f"Microcat does not have VIN {req.get('vin')} - "
-                         f"check the VIN on the quote, or look this one up by "
-                         f"model and build date by hand"}
-                for l in req.get("lines", [])]
-        return _write_result(job, req, vurl, rows)
+    else:
+        log(f"  {job}: VIN {req.get('vin')} ({len(req.get('lines', []))} line(s))")
+        _jobwit = (attempt_log.Line("partscheck", job, "job")
+                   if attempt_log else None)
+        try:
+            vurl = mc.vin(req["vin"])
+            log(f"      vehicle: {mc.page.title()[:80]}")
+            if _jobwit:
+                _jobwit.ok("vin", mc.page.title()[:70], value=req.get("vin"))
+        except VinNotFound as e:
+            if _jobwit:
+                _jobwit.miss("vin", str(e)[:120])
+            # A real answer from the authority. Recorded as NOT_FOUND on every line
+            # so the job leaves the queue instead of being retried nightly for ever -
+            # which is how 148 requests piled up unnoticed.
+            log(f"      {e}")
+            vurl = ""
+            rows = [{"line": l.get("line"), "description": l.get("description", ""),
+                     "oem_no": "", "confidence": "NOT_FOUND",
+                     "note": f"Microcat does not have VIN {req.get('vin')} - "
+                             f"check the VIN on the quote, or look this one up by "
+                             f"model and build date by hand"}
+                    for l in req.get("lines", [])]
+            return _write_result(job, req, vurl, rows)
+
+    # Without a VIN the grid holds every year of the model - narrow it by the
+    # quote's year before the matcher scores anything.
+    if by_body:
+        _find = lambda t: _rows_for_year(mc.find(t), vehicle.get("year"))  # noqa: E731
+    else:
+        _find = mc.find
 
     rows = []
     _used_numbers = {}          # part number -> the description that claimed it
@@ -1920,7 +2128,7 @@ def work_job(mc, req):
         except Exception:
             pass
         for t in _verified:
-            got = mc.find(t)
+            got = _find(t)
             if not got:
                 continue
             import part_noun as _pn2
@@ -1938,7 +2146,7 @@ def work_job(mc, req):
             if pick:
                 break
         for t in ([] if pick else terms):
-            got = mc.find(t)
+            got = _find(t)
             if not got:
                 continue
             p2, c2, w2 = best_match(desc, got, hint_pncs)
@@ -2073,6 +2281,9 @@ def work_job(mc, req):
             rows.append({"line": l.get("line"), "description": desc, "oem_no": "",
                          "confidence": "NOT_FOUND", "note": note})
         log(f"      {desc[:34]:36} -> {rows[-1]['oem_no'] or rows[-1]['confidence']}")
+    if by_body:
+        return {"job": job, "vehicle_url": vurl,
+                "rows": _proposed_only(rows, vehicle)}
     return _write_result(job, req, vurl, rows)
 
 
@@ -2208,8 +2419,12 @@ def _run_locked(q, limit):
             except Exception:
                 pass
             log(f"*** CANNOT ENTER THE MICROCAT EPC: {str(e)[:160]}")
-            log("    If it says not signed in: sign in once by hand in the API "
-                "HELPER window. The runner never types credentials.")
+            # 28 Oct 2026: this used to end "The runner never types credentials" -
+            # the rule before 1 Oct, when auto sign-in was added. Stale advice
+            # sends the next reader looking in the wrong place.
+            log("    If it says not signed in: the sign-in line above says why. "
+                "Fix MICROCAT_USERNAME / MICROCAT_PASSWORD in .env, or sign in "
+                "once by hand in the API HELPER window.")
             return 2
         for req in q[:limit]:
             try:
@@ -2226,11 +2441,60 @@ def _run_locked(q, limit):
     return 0
 
 
+def run_by_body(job, vehicle, lines):
+    """ONE NO-VIN JOB, BY BODY TYPE, FOR A PERSON AT THE DESK.  28 Oct 2026.
+
+    Its own button (Morgan, 28 Oct 2026), so a body-type answer can never be
+    mistaken for a VIN answer. vehicle = {"make", "model", "body", "year"};
+    lines = [{"line", "description", "qty"}].
+
+    DELIBERATELY OUTSIDE THE QUEUE. Nothing goes in partfinder\\requests and
+    nothing is written to results\\: validate() learns every CONFIRMED row it
+    sees, and a number from a body type must not be learned until a person has
+    confirmed it on the desk. The rows come straight back to the caller, every
+    one PROPOSED or NOT_FOUND (see _proposed_only).
+
+    Returns {"rows": [...]} or {"error": "..."}. An error means NOTHING WAS
+    SEARCHED, and the caller must say that - not mark the lines NOT FOUND.
+    """
+    make = str(vehicle.get("make") or "").upper()
+    if not any(m in make for m in ("TOYOTA", "LEXUS")):
+        return {"error": f"Microcat only holds Toyota and Lexus, not {make or 'an unknown make'}."}
+    # The same lock as run(): a scheduled pass and this click drive the same tab,
+    # and interleaving them reads one car's numbers off another.
+    lock = runlock.RunLock("microcat_runner", stale_minutes=45, log=log)
+    if not lock.acquire():
+        return {"error": busy_message()}
+    try:
+        busy_with(job=job, lines=len(lines))
+        try:
+            mc = Microcat().open(human=True)
+        except Exception as e:
+            return {"error": "could not attach to API HELPER: " + str(e)[:150]}
+        try:
+            mc.epc()
+            req = {"_job": job, "lookup": "body", "vehicle": vehicle,
+                   "make": make, "model": vehicle.get("model", ""),
+                   "vin": "", "lines": lines}
+            return {"rows": work_job(mc, req)["rows"]}
+        except Exception as e:
+            log(f"  {job}: BODY TYPE lookup NOT RUN: {str(e)[:160]}")
+            return {"error": str(e)[:200]}
+        finally:
+            mc.close()
+    finally:
+        busy_with(clear=True)
+        lock.release()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--explore", metavar="VIN")
+    # 28 Oct 2026: capture the Identify Vehicle screen so the model / body /
+    # year pickers can be pinned for identify_by_model(). Reads only.
+    ap.add_argument("--explore-model", action="store_true")
     ap.add_argument("--run", action="store_true")
     ap.add_argument("--job", action="append", dest="jobs")
     ap.add_argument("--all", action="store_true", help="include the old backlog")
@@ -2242,7 +2506,7 @@ def main():
     a = ap.parse_args()
     if a.status:
         return status()
-    if a.check or a.explore:
+    if a.check or a.explore or a.explore_model:
         try:
             mc = Microcat().open()
         except Exception as e:
@@ -2254,6 +2518,10 @@ def main():
             if a.explore and ok:
                 print("\nvehicle:", mc.vin(a.explore))
                 print("capture:", mc.capture("microcat_vehicle"))
+            if a.explore_model and ok:
+                mc.epc()
+                mc._goto_identify()
+                print("\nidentify screen:", mc.capture("microcat_identify_screen"))
             return 0 if ok else 2
         finally:
             mc.close()
