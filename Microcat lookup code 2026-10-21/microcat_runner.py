@@ -378,13 +378,6 @@ class Microcat:
         "providing" on a login page counted as signed in. It is a whole word now.
         This is a rough reading of the text; sign_in() and epc() trust only the
         Start tile."""
-        """True if the page looks signed in to Microcat, False on a login screen.
-
-        This only detects; it never signs in. Since 1 Oct 2026 the runner does
-        type credentials itself - sign_in() fills the Infomedia form from
-        microcat_credentials.json. Only when that file is missing or the login
-        is refused does a person have to sign in; then report it and stop, do
-        not half-run the queue."""
         t = self.text().lower()
         if any(k in t for k in ("sign in", "log in", "username", "password")) \
                 and not re.search(r"\bvin\b", t):
@@ -405,16 +398,28 @@ class Microcat:
             self.page.wait_for_timeout(1000)
 
     def _credentials(self):
-        """The Infomedia sign-in, from microcat_credentials.json. () if absent."""
-        import json as _j
-        f = os.path.join(HERE, "microcat_credentials.json")
+        """The Infomedia sign-in, from MICROCAT_USERNAME / MICROCAT_PASSWORD in .env
+        (beside this file, git-ignored). A real environment variable wins over the
+        file. () if absent or still holding the example text.
+
+        31 Oct 2026 (Morgan): the Arun-branch merge brought back the older
+        microcat_credentials.json reader. .env is kept - _cred_stamp() keys a
+        refusal on when .env was saved, so the JSON file could never lift one."""
+        env = {}
         try:
-            d = _j.load(open(f, encoding="utf-8"))
-            u, w = str(d.get("username") or "").strip(), str(d.get("password") or "")
-            if u and w and not u.startswith("your "):
-                return u, w
+            with open(os.path.join(HERE, ".env"), encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    env[k.strip()] = v.strip().strip("'\"")
         except Exception:
             pass
+        u = (os.environ.get("MICROCAT_USERNAME") or env.get("MICROCAT_USERNAME") or "").strip()
+        w = os.environ.get("MICROCAT_PASSWORD") or env.get("MICROCAT_PASSWORD") or ""
+        if u and w and not u.startswith("your "):
+            return u, w
         return ()
 
     def sign_in(self):
@@ -448,16 +453,13 @@ class Microcat:
         """
         cred = self._credentials()
         if not cred:
+            # SAY SO.  An absent file used to return False without a word, so
+            # the feature looked built and was inert while a person kept the
+            # window signed in by hand.
             log("  *** AUTO SIGN-IN SKIPPED: no Microcat credentials configured. Put "
                 "MICROCAT_USERNAME and MICROCAT_PASSWORD in .env beside "
                 "microcat_runner.py (copy .env.example), or sign in by hand in "
                 "the API HELPER window.")
-            # SAY SO.  An absent file used to return False without a word, so
-            # the feature looked built and was inert while a person kept the
-            # window signed in by hand.
-            log("  sign-in SKIPPED: no microcat_credentials.json beside "
-                "microcat_runner.py (only the EXAMPLE?) - Microcat works only "
-                "while a person keeps API HELPER signed in")
             return False
         user, pwd = cred
         stamp = self._cred_stamp(user)
@@ -489,10 +491,12 @@ class Microcat:
                 log("  sign-in: no username box and no Start tile - neither a login "
                     "page nor a session. Nothing typed. url=" + str(lp.url)[:80])
                 return False
+            # fill(), not keystrokes.  31 Oct 2026 (Morgan): the Arun-branch
+            # merge brought in _type_like_a_person() for both fields. Kept as
+            # fill(): nothing shows fill() causes a refusal, and the login is
+            # not to be dressed up to get past Infomedia's bot check. Switch
+            # only if a real attempt shows the form ignores fill().
             u.fill(user)
-                log("  sign-in: no username box on the page - already signed in?")
-                return self.signed_in()
-            self._type_like_a_person(u, user)
             w = lp.query_selector("input[type=password]")
             if not w:
                 # some tenants ask for the password on a second step
@@ -513,7 +517,7 @@ class Microcat:
                     "not retrying until the credentials change. url="
                     + str(lp.url)[:80])
                 return False
-            self._type_like_a_person(w, pwd)
+            w.fill(pwd)
             for sel in ("button[type=submit]", "button:has-text('Sign in')",
                         "button:has-text('Log in')", "button:has-text('Login')"):
                 b = lp.query_selector(sel)
@@ -544,13 +548,6 @@ class Microcat:
                 "Not retrying until the credentials change, or "
                 "microcat_signin_refused.json is deleted.")
             return False
-            lp.wait_for_timeout(9000)
-            ok = self.signed_in()
-            log("  signed in to Microcat automatically" if ok else
-                "  sign-in did not take - Infomedia rejected it. Check the "
-                "password in microcat_credentials.json (it returned errorCode=1 "
-                "on 29 Sep, which means the credentials were refused).")
-            return ok
         except Exception as e:
             # A crash or timeout says nothing about the credentials, so it is
             # NOT recorded as a refusal - the next pass may simply work.
@@ -590,14 +587,6 @@ class Microcat:
                 os.remove(SIGNIN_REFUSED)
         except Exception:
             pass
-    def _type_like_a_person(self, el, value):
-        """Real keystrokes, 35 ms apart - the same as _type() - instead of
-        fill(), which sets the value in one go with no key events at all."""
-        el.focus()
-        self.page.keyboard.press("Control+a")
-        self.page.keyboard.press("Delete")
-        self.page.keyboard.type(value, delay=35)
-        self.page.wait_for_timeout(300)
 
     def check(self):
         self.page.goto(BASE, wait_until="domcontentloaded", timeout=90000)
@@ -607,8 +596,9 @@ class Microcat:
         print("url     :", self.page.url)
         print("title   :", self.page.title())
         print("signed in:", ok)
-        print("auto sign-in:", "credentials file present" if self._credentials()
-              else "OFF - no microcat_credentials.json (only a person can sign in)")
+        print("auto sign-in:", "credentials configured" if self._credentials()
+              else "OFF - no MICROCAT_USERNAME / MICROCAT_PASSWORD in .env "
+                   "(only a person can sign in)")
         print("--- first 500 chars ---")
         print(re.sub(r"\s+", " ", self.text())[:500])
         return ok
@@ -680,8 +670,6 @@ class Microcat:
                     "automatic sign-in did not work - the log line above says "
                     "why. Put MICROCAT_USERNAME and MICROCAT_PASSWORD in .env, or "
                     "sign in on that window once.")
-                    "automatic sign-in did not work. Put the login in "
-                    "microcat_credentials.json, or sign in on that window once.")
         btn.click()
         for _ in range(20):
             lp.wait_for_timeout(1500)
@@ -2513,9 +2501,6 @@ def _run_locked(q, limit):
                 "Fix MICROCAT_USERNAME / MICROCAT_PASSWORD in .env, or sign in "
                 "once by hand in the API HELPER window.")
             _stopped(e)
-            log("    If it says not signed in: the automatic sign-in failed. "
-                "Check microcat_credentials.json, or sign in once by hand in "
-                "the API HELPER window.")
             return 2
         # SIGNED OUT PART-WAY THROUGH: STOP, DO NOT GRIND.  31 Oct 2026 (Morgan).
         # A session lost after the EPC opened used to be just another job
