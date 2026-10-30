@@ -43,12 +43,13 @@ Flow: desk button `findMicrocat()` -> `partly_desk.py` -> `desk_finder.find_numb
 
 - **Toyota and Lexus only.** Other makes return a "needs PartsLink24" error before anything is searched. Pass the real make through. Don't default it to `TOYOTA`.
 - **The PNC is not the part-number prefix.** The two differ on 31.2% of genuine parts. For example, Hilux PNC 52152 is the RH bar, and its part number starts with 52151.
-- No VIN means no Microcat search.
+- No VIN means no Microcat search. **The body-type lookup below is switched off (31 Oct 2026):** its functions, the `work_job` branches and `--explore-model` are commented out, not deleted, and only the VIN path runs. When it was live (28 Oct 2026), the separate **body-type** button (`desk_finder.find_numbers_by_body()` -> `microcat_runner.run_by_body()`) searches by make/model/body/year. Everything it finds is stamped `PROPOSED` by `_proposed_only()`, so it never fills a number in. It runs outside the queue and never writes `results\`, so nothing it finds is learned. `Microcat.identify_by_model()` refuses until the model screen's selectors are pinned (`--explore-model`), and which job fields hold body/year is still unconfirmed (`desk_finder._body_details()`).
 - The code records history in comments that are dated and quote Brendon (e.g. `# 29 Sep 2026 (Brendon): ...`), each explaining why a rule exists. Keep that style when changing behaviour, and don't delete those comments as clutter.
 
 ## Known open issues (see `MICROCAT_LOGIN_FOR_CODER.md`)
 
 1. No credentials are configured, so `sign_in()` silently does nothing. Auto sign-in has succeeded 0 times in the log. The 29 Sep `errorCode=1` means the credentials were refused. Credentials now come from `MICROCAT_USERNAME` / `MICROCAT_PASSWORD`: a real environment variable is used first, then the git-ignored `.env` beside `microcat_runner.py` (template: `.env.example`). This replaced `microcat_credentials.json`; the log and the older `.md` notes still use the old name.
-2. A skipped auto sign-in should be logged loudly.
-3. `sign_in()` uses `fill()`, while the rest of the file types real keystrokes with `keyboard.type(..., delay=35)`.
-4. The `signed_in()` docstring and the log message near line 2204 still say "the runner never types credentials". That rule was reversed on 1 Oct 2026.
+2. ~~A skipped auto sign-in should be logged loudly.~~ Done 28 Oct 2026. Also: a refused login is written to `microcat_signin_refused.json` and not retried until `.env` is saved again, the username changes, or the file is deleted, so scheduled passes can't lock the account. Success is now judged by the Start tile appearing (`_start_tile()`), not by page text.
+3. `sign_in()` uses `fill()`, while the rest of the file types real keystrokes with `keyboard.type(..., delay=35)`. Left as is on purpose: there's no evidence it causes refusals, and it shouldn't be changed just to get past a vendor's bot check. Change it only if testing shows the form ignores `fill()`.
+4. ~~The `signed_in()` docstring and the `_run_locked()` log message still say "the runner never types credentials".~~ Fixed 28 Oct 2026.
+5. Before adding credentials: the Microcat session is currently under a named person's login. Confirm with Infomedia (and that person) that automated sign-in is allowed, or get a service account.
