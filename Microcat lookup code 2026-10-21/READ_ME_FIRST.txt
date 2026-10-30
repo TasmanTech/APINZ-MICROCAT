@@ -26,6 +26,11 @@ HOW IT RUNS, END TO END
 
 NO VIN: THE BODY-TYPE BUTTON (added 28 Oct 2026, not live yet)
 
+    SWITCHED OFF 31 Oct 2026: all of the code below is commented out (not
+    deleted) in desk_finder.py and microcat_runner.py, along with the
+    --explore-model flag. Only the VIN search runs. Comment it back in, and
+    add its button to the desk, to bring it back.
+
     "Find numbers (body type)" -> desk_finder.find_numbers_by_body(job)
     -> microcat_runner.run_by_body(). For quotes with NO VIN only. It picks
     the car by make / model / body / year, and EVERY number it finds is a

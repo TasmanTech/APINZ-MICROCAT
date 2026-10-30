@@ -19,7 +19,6 @@ There are no build, lint or test commands. Each script has its own CLI, document
 python microcat_runner.py --check              # is API HELPER signed in?
 python microcat_runner.py --status             # queue at a glance
 python microcat_runner.py --explore <VIN>      # dump the page, pin selectors
-python microcat_runner.py --explore-model      # dump Identify Vehicle, for the body-type pickers
 python microcat_runner.py --run [--all] [--job <ID>] [--limit N]
 python microcat_robustness.py [rounds]         # repeated real lookups, failures classified
 python microcat_diagram.py <VIN> <search term> # fetch the illustration GIF
@@ -44,7 +43,7 @@ Flow: desk button `findMicrocat()` -> `partly_desk.py` -> `desk_finder.find_numb
 
 - **Toyota and Lexus only.** Other makes return a "needs PartsLink24" error before anything is searched. Pass the real make through. Don't default it to `TOYOTA`.
 - **The PNC is not the part-number prefix.** The two differ on 31.2% of genuine parts. For example, Hilux PNC 52152 is the RH bar, and its part number starts with 52151.
-- No VIN means no Microcat search, with one exception (28 Oct 2026): the separate **body-type** button (`desk_finder.find_numbers_by_body()` -> `microcat_runner.run_by_body()`) searches by make/model/body/year. Everything it finds is stamped `PROPOSED` by `_proposed_only()`, so it never fills a number in. It runs outside the queue and never writes `results\`, so nothing it finds is learned. `Microcat.identify_by_model()` refuses until the model screen's selectors are pinned (`--explore-model`), and which job fields hold body/year is still unconfirmed (`desk_finder._body_details()`).
+- No VIN means no Microcat search. **The body-type lookup below is switched off (31 Oct 2026):** its functions, the `work_job` branches and `--explore-model` are commented out, not deleted, and only the VIN path runs. When it was live (28 Oct 2026), the separate **body-type** button (`desk_finder.find_numbers_by_body()` -> `microcat_runner.run_by_body()`) searches by make/model/body/year. Everything it finds is stamped `PROPOSED` by `_proposed_only()`, so it never fills a number in. It runs outside the queue and never writes `results\`, so nothing it finds is learned. `Microcat.identify_by_model()` refuses until the model screen's selectors are pinned (`--explore-model`), and which job fields hold body/year is still unconfirmed (`desk_finder._body_details()`).
 - The code records history in comments that are dated and quote Brendon (e.g. `# 29 Sep 2026 (Brendon): ...`), each explaining why a rule exists. Keep that style when changing behaviour, and don't delete those comments as clutter.
 
 ## Known open issues (see `MICROCAT_LOGIN_FOR_CODER.md`)

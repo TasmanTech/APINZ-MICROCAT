@@ -48,7 +48,6 @@ other make is left in the queue untouched (partslink24 requests are not ours).
 
     python microcat_runner.py --check              # is API HELPER signed in?
     python microcat_runner.py --explore <VIN>      # dump the page, pin selectors
-    python microcat_runner.py --explore-model      # dump Identify Vehicle (body-type pickers)
     python microcat_runner.py --status             # queue at a glance
     python microcat_runner.py --run                # work the queue (live jobs)
     python microcat_runner.py --run --all          # include expired/backlog
@@ -617,6 +616,13 @@ class Microcat:
         The EPC tab also vanishes on its own - it did twice tonight - so this
         re-launches rather than assuming last pass's tab is still there.
         """
+        # 31 Oct 2026 (Morgan): if chrome_session failed to import, the
+        # _park() calls below died with "'NoneType' object has no attribute
+        # '_park'" - which, like the 21 Sep NameError, reads like a sign-in
+        # problem. Say what it actually is.
+        if chrome_session is None:
+            raise RuntimeError("chrome_session could not be imported - cannot "
+                               "manage the API HELPER window")
         for p in self.ctx.pages:
             if self.EPC_HINT in (p.url or ""):
                 self.page = p
@@ -644,7 +650,7 @@ class Microcat:
                 lp = self.page
                 btn = self._start_tile(seconds=5)
             if not btn:
-                raise RuntimeError(
+                raise SignedOut(
                     "the API HELPER window is not signed in to Microcat and the "
                     "automatic sign-in did not work - the log line above says "
                     "why. Put MICROCAT_USERNAME and MICROCAT_PASSWORD in .env, or "
@@ -981,30 +987,32 @@ class Microcat:
             "Microcat has no vehicle for " + str(v)
             + " (tried " + ", ".join(tried) + ")")
 
-    def identify_by_model(self, make, model, body, year):
-        """Open the car by make / model / body / year - NO VIN.  28 Oct 2026.
+    # 31 Oct 2026 (Morgan): BODY-TYPE LOOKUP SWITCHED OFF FOR NOW - VIN search only.
+    # Commented out, not deleted, so it can come back with its button.
+#     def identify_by_model(self, make, model, body, year):
+#         """Open the car by make / model / body / year - NO VIN.  28 Oct 2026.
 
-        For quotes that arrive with no VIN at all (Morgan, 28 Oct 2026: a body
-        type lookup as its own button, never a replacement for the VIN). Without
-        the VIN Microcat cannot apply build date or model code, so whatever this
-        finds is only ever PROPOSED - see _proposed_only().
+#         For quotes that arrive with no VIN at all (Morgan, 28 Oct 2026: a body
+#         type lookup as its own button, never a replacement for the VIN). Without
+#         the VIN Microcat cannot apply build date or model code, so whatever this
+#         finds is only ever PROPOSED - see _proposed_only().
 
-        NOT WIRED YET, AND IT SAYS SO. Every lookup so far has opened the car
-        through #genericSearchInput with a VIN or chassis number. The model /
-        body / year pickers on the Identify Vehicle screen have never been
-        mapped, and guessed selectors are exactly the kind of code that "works"
-        on the wrong car. Until someone signed in runs
-            python microcat_runner.py --explore-model
-        and the selectors are pinned from that capture, this refuses - and
-        refusing means nothing is searched and nothing is marked NOT FOUND.
+#         NOT WIRED YET, AND IT SAYS SO. Every lookup so far has opened the car
+#         through #genericSearchInput with a VIN or chassis number. The model /
+#         body / year pickers on the Identify Vehicle screen have never been
+#         mapped, and guessed selectors are exactly the kind of code that "works"
+#         on the wrong car. Until someone signed in runs
+#             python microcat_runner.py --explore-model
+#         and the selectors are pinned from that capture, this refuses - and
+#         refusing means nothing is searched and nothing is marked NOT FOUND.
 
-        When it is wired it must keep the same proof as vin(): the title
-        Microcat renders has to name this model and year, or it raises, and
-        more than one matching variant is a person's call, not ours.
-        """
-        raise RuntimeError(
-            "body-type lookup is not wired yet - the Microcat model screen has "
-            "not been mapped (run microcat_runner.py --explore-model signed in)")
+#         When it is wired it must keep the same proof as vin(): the title
+#         Microcat renders has to name this model and year, or it raises, and
+#         more than one matching variant is a person's call, not ours.
+#         """
+#         raise RuntimeError(
+#             "body-type lookup is not wired yet - the Microcat model screen has "
+#             "not been mapped (run microcat_runner.py --explore-model signed in)")
 
     def _search_identifier(self, p, ident, tried):
         """One identifier, every spelling of it. Returns the vehicle URL or None."""
@@ -1085,6 +1093,10 @@ class Microcat:
                 got = self._search_identifier(self.page, ident, tried)
                 if got:
                     return got
+            except SignedOut:
+                # Signed out is not "no such vehicle". Returning None here is
+                # what turned a lapsed session into VinNotFound - see SignedOut.
+                raise
             except Exception as e:
                 log(f"      re-entry failed: {str(e)[:70]}")
             finally:
@@ -1150,6 +1162,19 @@ class Microcat:
 
 class VinNotFound(Exception):
     """Microcat answered, and the answer was 'no such vehicle'."""
+
+
+class SignedOut(RuntimeError):
+    """The Microcat session is gone and sign_in() could not bring it back.
+
+    31 Oct 2026 (Morgan). NOT AN ANSWER ABOUT ANY CAR. Four times (26 Aug,
+    1 Sep, 3 Sep, 28 Sep) the session lapsed during a VIN search: the
+    re-entry hit the signed-out landing page, that failure was swallowed as
+    "re-entry failed", and vin() raised VinNotFound - so a genuine Toyota VIN
+    (5TDBZ3FH00S745311, 19 lines) was written to results\\ as "Microcat has
+    no vehicle". A RuntimeError subclass, so every existing `except
+    RuntimeError` still catches it; the places that must NOT swallow it
+    re-raise it by name."""
 
 
 # ------------------------------------------------------------------ matching
@@ -1431,50 +1456,54 @@ def base_number(num):
     return m.group(1) if m else str(num).upper()
 
 
-def _year_of(s):
-    """The four-digit year in a grid date ("04/2020" -> 2020), or None."""
-    m = re.search(r"\b(19|20)\d{2}\b", str(s or ""))
-    return int(m.group(0)) if m else None
+# 31 Oct 2026 (Morgan): BODY-TYPE LOOKUP SWITCHED OFF FOR NOW - VIN search only.
+# Commented out, not deleted, so it can come back with its button.
+# def _year_of(s):
+#     """The four-digit year in a grid date ("04/2020" -> 2020), or None."""
+#     m = re.search(r"\b(19|20)\d{2}\b", str(s or ""))
+#     return int(m.group(0)) if m else None
 
 
-def _rows_for_year(rows, year):
-    """Drop grid rows whose production range plainly excludes this year.
+# def _rows_for_year(rows, year):
+#     """Drop grid rows whose production range plainly excludes this year.
 
-    Body-type lookups only (28 Oct 2026). With a VIN, Microcat filters by build
-    date itself; without one the grid holds every year of the model, so this is
-    the one narrowing we can do honestly. A row whose dates cannot be read is
-    KEPT - an unreadable date is not evidence the part does not fit."""
-    try:
-        year = int(year)
-    except (TypeError, ValueError):
-        return rows
-    out = []
-    for r in rows or []:
-        start, end = _year_of(r.get("from")), _year_of(r.get("to"))
-        if (start and start > year) or (end and end < year):
-            continue
-        out.append(r)
-    return out
+#     Body-type lookups only (28 Oct 2026). With a VIN, Microcat filters by build
+#     date itself; without one the grid holds every year of the model, so this is
+#     the one narrowing we can do honestly. A row whose dates cannot be read is
+#     KEPT - an unreadable date is not evidence the part does not fit."""
+#     try:
+#         year = int(year)
+#     except (TypeError, ValueError):
+#         return rows
+#     out = []
+#     for r in rows or []:
+#         start, end = _year_of(r.get("from")), _year_of(r.get("to"))
+#         if (start and start > year) or (end and end < year):
+#             continue
+#         out.append(r)
+#     return out
 
 
-def _proposed_only(rows, vehicle):
-    """NOTHING FOUND WITHOUT A VIN IS CONFIRMED.  28 Oct 2026.
+# 31 Oct 2026 (Morgan): BODY-TYPE LOOKUP SWITCHED OFF FOR NOW - VIN search only.
+# Commented out, not deleted, so it can come back with its button.
+# def _proposed_only(rows, vehicle):
+#     """NOTHING FOUND WITHOUT A VIN IS CONFIRMED.  28 Oct 2026.
 
-    A body type covers several model codes and production periods, and the
-    VIN is what Microcat uses to choose between them. So on this path every
-    CONFIRMED row - the matcher's pick AND a learned mapping, which was learned
-    on some other car's VIN - becomes PROPOSED for a person to check. Done
-    here, once, on the finished rows, so a branch added to work_job() later
-    cannot slip a CONFIRMED past it."""
-    car = " ".join(str(vehicle.get(k) or "") for k in
-                   ("make", "model", "body", "year")).strip()
-    for r in rows:
-        if str(r.get("confidence", "")).upper() == "CONFIRMED" and r.get("oem_no"):
-            r["confidence"] = "PROPOSED"
-            r["note"] = (f"Body-type lookup, NO VIN ({car}): Microcat could not "
-                         f"apply build date or model code. Check before "
-                         f"confirming. " + str(r.get("note") or "")).strip()
-    return rows
+#     A body type covers several model codes and production periods, and the
+#     VIN is what Microcat uses to choose between them. So on this path every
+#     CONFIRMED row - the matcher's pick AND a learned mapping, which was learned
+#     on some other car's VIN - becomes PROPOSED for a person to check. Done
+#     here, once, on the finished rows, so a branch added to work_job() later
+#     cannot slip a CONFIRMED past it."""
+#     car = " ".join(str(vehicle.get(k) or "") for k in
+#                    ("make", "model", "body", "year")).strip()
+#     for r in rows:
+#         if str(r.get("confidence", "")).upper() == "CONFIRMED" and r.get("oem_no"):
+#             r["confidence"] = "PROPOSED"
+#             r["note"] = (f"Body-type lookup, NO VIN ({car}): Microcat could not "
+#                          f"apply build date or model code. Check before "
+#                          f"confirming. " + str(r.get("note") or "")).strip()
+#     return rows
 
 
 def _pnc_hints(desc, make="", model=""):
@@ -1880,13 +1909,15 @@ def work_job(mc, req):
     # A real VIN is 11-17 characters of the VIN alphabet (no I, O or Q). Less
     # than that is a broken record, not a car - so it is reported once, taken
     # out of the queue, and left for a person to correct on the quote.
-    # THE BODY-TYPE PATH  (28 Oct 2026). A request from run_by_body() has no VIN
-    # on purpose and carries the vehicle instead. It is never in the queue and
-    # never written to results\ - see run_by_body().
-    by_body = req.get("lookup") == "body"
-    vehicle = req.get("vehicle") or {}
+    # 31 Oct 2026 (Morgan): BODY-TYPE LOOKUP SWITCHED OFF FOR NOW - VIN search
+    # only. Its branches in this function are commented out, not deleted.
+    # # THE BODY-TYPE PATH  (28 Oct 2026). A request from run_by_body() has no VIN
+    # # on purpose and carries the vehicle instead. It is never in the queue and
+    # # never written to results\ - see run_by_body().
+    # by_body = req.get("lookup") == "body"
+    # vehicle = req.get("vehicle") or {}
     _vin = re.sub(r"[^A-HJ-NPR-Z0-9]", "", str(req.get("vin") or "").upper())
-    if not by_body and len(_vin) < 11:
+    if len(_vin) < 11:
         log(f"  {job}: VIN {req.get('vin')!r} is not a VIN - nothing to look "
             f"up. Needs a human to fix the VIN on the quote.")
         rows = [{"line": l.get("line"), "description": l.get("description"),
@@ -1897,44 +1928,44 @@ def work_job(mc, req):
                 for l in req.get("lines", [])]
         return _write_result(job, req, "", rows)
 
-    if by_body:
-        # Identification failing RAISES to run_by_body(), which reports it as
-        # "not searched" - never as NOT_FOUND on every line.
-        log(f"  {job}: BODY TYPE {vehicle} ({len(req.get('lines', []))} line(s))")
-        vurl = mc.identify_by_model(vehicle.get("make"), vehicle.get("model"),
-                                    vehicle.get("body"), vehicle.get("year"))
+    # if by_body:
+    #     # Identification failing RAISES to run_by_body(), which reports it as
+    #     # "not searched" - never as NOT_FOUND on every line.
+    #     log(f"  {job}: BODY TYPE {vehicle} ({len(req.get('lines', []))} line(s))")
+    #     vurl = mc.identify_by_model(vehicle.get("make"), vehicle.get("model"),
+    #                                 vehicle.get("body"), vehicle.get("year"))
+    #     log(f"      vehicle: {mc.page.title()[:80]}")
+    # else:
+    log(f"  {job}: VIN {req.get('vin')} ({len(req.get('lines', []))} line(s))")
+    _jobwit = (attempt_log.Line("partscheck", job, "job")
+               if attempt_log else None)
+    try:
+        vurl = mc.vin(req["vin"])
         log(f"      vehicle: {mc.page.title()[:80]}")
-    else:
-        log(f"  {job}: VIN {req.get('vin')} ({len(req.get('lines', []))} line(s))")
-        _jobwit = (attempt_log.Line("partscheck", job, "job")
-                   if attempt_log else None)
-        try:
-            vurl = mc.vin(req["vin"])
-            log(f"      vehicle: {mc.page.title()[:80]}")
-            if _jobwit:
-                _jobwit.ok("vin", mc.page.title()[:70], value=req.get("vin"))
-        except VinNotFound as e:
-            if _jobwit:
-                _jobwit.miss("vin", str(e)[:120])
-            # A real answer from the authority. Recorded as NOT_FOUND on every line
-            # so the job leaves the queue instead of being retried nightly for ever -
-            # which is how 148 requests piled up unnoticed.
-            log(f"      {e}")
-            vurl = ""
-            rows = [{"line": l.get("line"), "description": l.get("description", ""),
-                     "oem_no": "", "confidence": "NOT_FOUND",
-                     "note": f"Microcat does not have VIN {req.get('vin')} - "
-                             f"check the VIN on the quote, or look this one up by "
-                             f"model and build date by hand"}
-                    for l in req.get("lines", [])]
-            return _write_result(job, req, vurl, rows)
+        if _jobwit:
+            _jobwit.ok("vin", mc.page.title()[:70], value=req.get("vin"))
+    except VinNotFound as e:
+        if _jobwit:
+            _jobwit.miss("vin", str(e)[:120])
+        # A real answer from the authority. Recorded as NOT_FOUND on every line
+        # so the job leaves the queue instead of being retried nightly for ever -
+        # which is how 148 requests piled up unnoticed.
+        log(f"      {e}")
+        vurl = ""
+        rows = [{"line": l.get("line"), "description": l.get("description", ""),
+                 "oem_no": "", "confidence": "NOT_FOUND",
+                 "note": f"Microcat does not have VIN {req.get('vin')} - "
+                         f"check the VIN on the quote, or look this one up by "
+                         f"model and build date by hand"}
+                for l in req.get("lines", [])]
+        return _write_result(job, req, vurl, rows)
 
-    # Without a VIN the grid holds every year of the model - narrow it by the
-    # quote's year before the matcher scores anything.
-    if by_body:
-        _find = lambda t: _rows_for_year(mc.find(t), vehicle.get("year"))  # noqa: E731
-    else:
-        _find = mc.find
+    # # Without a VIN the grid holds every year of the model - narrow it by the
+    # # quote's year before the matcher scores anything.
+    # if by_body:
+    #     _find = lambda t: _rows_for_year(mc.find(t), vehicle.get("year"))  # noqa: E731
+    # else:
+    _find = mc.find
 
     rows = []
     _used_numbers = {}          # part number -> the description that claimed it
@@ -2223,22 +2254,18 @@ def work_job(mc, req):
             # word in the line is one we know names a part, the noun came from a
             # shortcut - so the answer is a SUGGESTION for a person, never a
             # CONFIRMED number that gets priced and sent.
+            #
+            # A PROPOSED NUMBER STILL CLAIMS ITS NUMBER.  31 Oct 2026 (Morgan).
+            # The PROPOSED row used to be written here, before the duplicate
+            # check below, and never recorded in _used_numbers. On the Hilux
+            # (PDPQ-12816-PE, 20 Oct) "Radiator fan complete with shroud" was
+            # PROPOSED 53112-0K350 and "Radiator" was then CONFIRMED the same
+            # number - two different parts on one number, the exact signal the
+            # duplicate rule exists to catch. It is now written after that check.
             try:
                 _sure = _pn.comprehended(desc)
             except Exception:
                 _sure = True
-            if not _bad and not _sure:
-                log(f"      {desc[:34]:36} -> PROPOSED {pick['number']} "
-                    f"(wording not understood - left for a person)")
-                rows.append({"line": l.get("line"), "description": desc,
-                             "oem_no": pick["number"], "confidence": "PROPOSED",
-                             "note": f"Microcat offered {pick['number']} "
-                                     f"({pick.get('description','')}), but nothing in "
-                                     f"'{desc}' is a part word we know, so this was "
-                                     f"NOT filled in. Check it and type it if right."})
-                if wit:
-                    wit.finish()
-                continue
             if _bad:
                 log(f"      {desc[:34]:36} -> WRONG KIND: {_bad[:60]}")
                 rows.append({"line": l.get("line"), "description": desc,
@@ -2268,6 +2295,19 @@ def work_job(mc, req):
                 wit.fail("match", f"duplicate number with '{other[:30]}'")
                 wit.finish()
             continue
+        if pick and not _sure:
+            _used_numbers[pick["number"]] = desc
+            log(f"      {desc[:34]:36} -> PROPOSED {pick['number']} "
+                f"(wording not understood - left for a person)")
+            rows.append({"line": l.get("line"), "description": desc,
+                         "oem_no": pick["number"], "confidence": "PROPOSED",
+                         "note": f"Microcat offered {pick['number']} "
+                                 f"({pick.get('description','')}), but nothing in "
+                                 f"'{desc}' is a part word we know, so this was "
+                                 f"NOT filled in. Check it and type it if right."})
+            if wit:
+                wit.finish()
+            continue
         if pick:
             _used_numbers[pick["number"]] = desc
             rows.append({"line": l.get("line"), "description": desc,
@@ -2281,9 +2321,9 @@ def work_job(mc, req):
             rows.append({"line": l.get("line"), "description": desc, "oem_no": "",
                          "confidence": "NOT_FOUND", "note": note})
         log(f"      {desc[:34]:36} -> {rows[-1]['oem_no'] or rows[-1]['confidence']}")
-    if by_body:
-        return {"job": job, "vehicle_url": vurl,
-                "rows": _proposed_only(rows, vehicle)}
+    # if by_body:
+    #     return {"job": job, "vehicle_url": vurl,
+    #             "rows": _proposed_only(rows, vehicle)}
     return _write_result(job, req, vurl, rows)
 
 
@@ -2310,8 +2350,23 @@ def _write_result(job, req, vurl, rows):
 # not that one pass tries to eat 250 hours of it.
 BACKLOG_PER_PASS = 3
 
+# WHY THE LAST run() IN THIS PROCESS STOPPED WITHOUT WORKING.  31 Oct 2026
+# (Morgan). desk_finder calls run() in-process and then only sees "no result
+# yet" from validate() - which it read as "another pass had the browser" even
+# when the truth was "Microcat is signed out", so the person was told to wait
+# and press again for something only signing in fixes. "" = not stopped (it
+# ran, or another pass simply had the lock).
+LAST_STOP = ""
+
+
+def _stopped(e):
+    global LAST_STOP
+    LAST_STOP = str(e)[:200]
+
 
 def run(limit=8, jobs=None, everything=False, **_ignored):
+    global LAST_STOP
+    LAST_STOP = ""
     q = pending()
     if jobs:
         q = [r for r in q if r["_job"] in set(jobs)]
@@ -2353,7 +2408,11 @@ def run(limit=8, jobs=None, everything=False, **_ignored):
         log("  another Microcat pass is already running - leaving the queue to it")
         return 0
     try:
-        busy_with(job=(q[0] if q else "?"), lines=len(q) if q else None)
+        # 31 Oct 2026 (Morgan): this passed the whole request dict as the job,
+        # so a waiting person read "looking up job {'vin': ...}", and the count
+        # of JOBS as "line(s)". The job ID and its own line count now.
+        busy_with(job=(q[0].get("_job") if q else "?"),
+                  lines=len(q[0].get("lines") or []) if q else None)
         return _run_locked(q, limit)
     finally:
         busy_with(clear=True)
@@ -2389,6 +2448,7 @@ def _run_locked(q, limit):
         _busy = ("another pass" in str(e) or "runlock" in str(e).lower()
                  or "already running" in str(e).lower())
         if not _busy:
+            _stopped(e)
             try:
                 import catalogue_alert
                 catalogue_alert.alert("Microcat", str(e)[:180],
@@ -2425,15 +2485,47 @@ def _run_locked(q, limit):
             log("    If it says not signed in: the sign-in line above says why. "
                 "Fix MICROCAT_USERNAME / MICROCAT_PASSWORD in .env, or sign in "
                 "once by hand in the API HELPER window.")
+            _stopped(e)
             return 2
-        for req in q[:limit]:
+        # SIGNED OUT PART-WAY THROUGH: STOP, DO NOT GRIND.  31 Oct 2026 (Morgan).
+        # A session lost after the EPC opened used to be just another job
+        # ERROR, so the loop went on and every remaining job hit the same
+        # signed-out landing page (1 Sep 2026: three in a row), with no alert,
+        # and a heartbeat telling Stage 2 all was well. Now the pass stops at
+        # the first SignedOut: the job it was on and everything after it are
+        # left in the queue untouched, with no results file, so the next pass
+        # picks them up once someone has signed in.
+        signed_out = None
+        todo = q[:limit]
+        for i, req in enumerate(todo):
             try:
                 if work_job(mc, req) is not None:
                     worked += 1
+            except SignedOut as e:
+                signed_out = e
+                left = [r["_job"] for r in todo[i:]]
+                mc.capture("microcat_SIGNED_OUT")
+                log(f"*** MICROCAT SIGNED OUT PART-WAY THROUGH THE PASS: {str(e)[:160]}")
+                log(f"    STOPPED. {worked} job(s) answered before it; {len(left)} left "
+                    f"in the queue untouched, nothing written for them: "
+                    f"{', '.join(left[:8])}{' ...' if len(left) > 8 else ''}")
+                _stopped(e)
+                try:
+                    import catalogue_alert
+                    catalogue_alert.alert("Microcat", str(e)[:180],
+                                          detail="signed out mid-pass - %d job(s) "
+                                                 "left in the queue" % len(left))
+                except Exception:
+                    pass
+                break
             except Exception:
                 log(f"  {req['_job']}: ERROR\n" + traceback.format_exc())
     finally:
         mc.close()
+    if signed_out is not None:
+        # No heartbeat: Stage 2 should go on warning until a pass gets through.
+        log(f"MICROCAT RUNNER END - {worked} job(s) answered, then STOPPED: signed out")
+        return 2
     if worked and browser_guard:
         browser_guard.beat("microcat")       # Stage 2 reads this
         log("  heartbeat written - Stage 2 will stop warning")
@@ -2441,50 +2533,52 @@ def _run_locked(q, limit):
     return 0
 
 
-def run_by_body(job, vehicle, lines):
-    """ONE NO-VIN JOB, BY BODY TYPE, FOR A PERSON AT THE DESK.  28 Oct 2026.
+# 31 Oct 2026 (Morgan): BODY-TYPE LOOKUP SWITCHED OFF FOR NOW - VIN search only.
+# Commented out, not deleted, so it can come back with its button.
+# def run_by_body(job, vehicle, lines):
+#     """ONE NO-VIN JOB, BY BODY TYPE, FOR A PERSON AT THE DESK.  28 Oct 2026.
 
-    Its own button (Morgan, 28 Oct 2026), so a body-type answer can never be
-    mistaken for a VIN answer. vehicle = {"make", "model", "body", "year"};
-    lines = [{"line", "description", "qty"}].
+#     Its own button (Morgan, 28 Oct 2026), so a body-type answer can never be
+#     mistaken for a VIN answer. vehicle = {"make", "model", "body", "year"};
+#     lines = [{"line", "description", "qty"}].
 
-    DELIBERATELY OUTSIDE THE QUEUE. Nothing goes in partfinder\\requests and
-    nothing is written to results\\: validate() learns every CONFIRMED row it
-    sees, and a number from a body type must not be learned until a person has
-    confirmed it on the desk. The rows come straight back to the caller, every
-    one PROPOSED or NOT_FOUND (see _proposed_only).
+#     DELIBERATELY OUTSIDE THE QUEUE. Nothing goes in partfinder\\requests and
+#     nothing is written to results\\: validate() learns every CONFIRMED row it
+#     sees, and a number from a body type must not be learned until a person has
+#     confirmed it on the desk. The rows come straight back to the caller, every
+#     one PROPOSED or NOT_FOUND (see _proposed_only).
 
-    Returns {"rows": [...]} or {"error": "..."}. An error means NOTHING WAS
-    SEARCHED, and the caller must say that - not mark the lines NOT FOUND.
-    """
-    make = str(vehicle.get("make") or "").upper()
-    if not any(m in make for m in ("TOYOTA", "LEXUS")):
-        return {"error": f"Microcat only holds Toyota and Lexus, not {make or 'an unknown make'}."}
-    # The same lock as run(): a scheduled pass and this click drive the same tab,
-    # and interleaving them reads one car's numbers off another.
-    lock = runlock.RunLock("microcat_runner", stale_minutes=45, log=log)
-    if not lock.acquire():
-        return {"error": busy_message()}
-    try:
-        busy_with(job=job, lines=len(lines))
-        try:
-            mc = Microcat().open(human=True)
-        except Exception as e:
-            return {"error": "could not attach to API HELPER: " + str(e)[:150]}
-        try:
-            mc.epc()
-            req = {"_job": job, "lookup": "body", "vehicle": vehicle,
-                   "make": make, "model": vehicle.get("model", ""),
-                   "vin": "", "lines": lines}
-            return {"rows": work_job(mc, req)["rows"]}
-        except Exception as e:
-            log(f"  {job}: BODY TYPE lookup NOT RUN: {str(e)[:160]}")
-            return {"error": str(e)[:200]}
-        finally:
-            mc.close()
-    finally:
-        busy_with(clear=True)
-        lock.release()
+#     Returns {"rows": [...]} or {"error": "..."}. An error means NOTHING WAS
+#     SEARCHED, and the caller must say that - not mark the lines NOT FOUND.
+#     """
+#     make = str(vehicle.get("make") or "").upper()
+#     if not any(m in make for m in ("TOYOTA", "LEXUS")):
+#         return {"error": f"Microcat only holds Toyota and Lexus, not {make or 'an unknown make'}."}
+#     # The same lock as run(): a scheduled pass and this click drive the same tab,
+#     # and interleaving them reads one car's numbers off another.
+#     lock = runlock.RunLock("microcat_runner", stale_minutes=45, log=log)
+#     if not lock.acquire():
+#         return {"error": busy_message()}
+#     try:
+#         busy_with(job=job, lines=len(lines))
+#         try:
+#             mc = Microcat().open(human=True)
+#         except Exception as e:
+#             return {"error": "could not attach to API HELPER: " + str(e)[:150]}
+#         try:
+#             mc.epc()
+#             req = {"_job": job, "lookup": "body", "vehicle": vehicle,
+#                    "make": make, "model": vehicle.get("model", ""),
+#                    "vin": "", "lines": lines}
+#             return {"rows": work_job(mc, req)["rows"]}
+#         except Exception as e:
+#             log(f"  {job}: BODY TYPE lookup NOT RUN: {str(e)[:160]}")
+#             return {"error": str(e)[:200]}
+#         finally:
+#             mc.close()
+#     finally:
+#         busy_with(clear=True)
+#         lock.release()
 
 
 def main():
@@ -2492,9 +2586,10 @@ def main():
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--explore", metavar="VIN")
-    # 28 Oct 2026: capture the Identify Vehicle screen so the model / body /
-    # year pickers can be pinned for identify_by_model(). Reads only.
-    ap.add_argument("--explore-model", action="store_true")
+    # 31 Oct 2026 (Morgan): switched off with the body-type lookup.
+    # # 28 Oct 2026: capture the Identify Vehicle screen so the model / body /
+    # # year pickers can be pinned for identify_by_model(). Reads only.
+    # ap.add_argument("--explore-model", action="store_true")
     ap.add_argument("--run", action="store_true")
     ap.add_argument("--job", action="append", dest="jobs")
     ap.add_argument("--all", action="store_true", help="include the old backlog")
@@ -2506,7 +2601,7 @@ def main():
     a = ap.parse_args()
     if a.status:
         return status()
-    if a.check or a.explore or a.explore_model:
+    if a.check or a.explore:
         try:
             mc = Microcat().open()
         except Exception as e:
@@ -2518,10 +2613,10 @@ def main():
             if a.explore and ok:
                 print("\nvehicle:", mc.vin(a.explore))
                 print("capture:", mc.capture("microcat_vehicle"))
-            if a.explore_model and ok:
-                mc.epc()
-                mc._goto_identify()
-                print("\nidentify screen:", mc.capture("microcat_identify_screen"))
+            # if a.explore_model and ok:
+            #     mc.epc()
+            #     mc._goto_identify()
+            #     print("\nidentify screen:", mc.capture("microcat_identify_screen"))
             return 0 if ok else 2
         finally:
             mc.close()
