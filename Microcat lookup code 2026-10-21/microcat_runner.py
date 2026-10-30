@@ -157,10 +157,9 @@ HUMAN_FLAG = os.path.join(HERE, "human_wants_browser.flag")
 def a_human_is_waiting(max_age_seconds=300):
     """True while someone is using the browser from the dashboard."""
     try:
-        import time as _t
         if not os.path.exists(HUMAN_FLAG):
             return False
-        if _t.time() - os.path.getmtime(HUMAN_FLAG) > max_age_seconds:
+        if time.time() - os.path.getmtime(HUMAN_FLAG) > max_age_seconds:
             os.remove(HUMAN_FLAG)       # stale - the pass died without clearing
             return False
         return True
@@ -187,31 +186,28 @@ SIGNIN_REFUSED = os.path.join(HERE, "microcat_signin_refused.json")
 
 def busy_with(job=None, lines=None, clear=False):
     """Record, or clear, what the browser is working on right now."""
-    import json as _j
-    import time as _t
     try:
         if clear:
             if os.path.exists(BUSY_FILE):
                 os.remove(BUSY_FILE)
             return
         with open(BUSY_FILE, "w", encoding="utf-8") as f:
-            _j.dump({"job": str(job or "?"), "lines": lines,
-                     "since": _t.time(), "pid": os.getpid()}, f)
+            json.dump({"job": str(job or "?"), "lines": lines,
+                       "since": time.time(), "pid": os.getpid()}, f)
     except Exception:
         pass
 
 
 def busy_message():
     """The honest sentence to show someone whose click had to wait."""
-    import json as _j
-    import time as _t
     try:
         if not os.path.exists(BUSY_FILE):
             return ("Microcat is busy with another lookup. It does ONE job at a "
                     "time - one browser, one signed-in seat. Give it a minute "
                     "and press the button again.")
-        d = _j.load(open(BUSY_FILE, encoding="utf-8"))
-        secs = int(_t.time() - float(d.get("since") or 0))
+        with open(BUSY_FILE, encoding="utf-8") as fh:
+            d = json.load(fh)
+        secs = int(time.time() - float(d.get("since") or 0))
         n = d.get("lines")
         return (f"Microcat is looking up job {d.get('job')}"
                 + (f" ({n} line(s))" if n else "")
@@ -295,14 +291,12 @@ class Microcat:
         # collide, and turns a mystifying timeout into one honest line.
         self._browser_lock = None
         try:
-            import runlock as _rl
-            self._browser_lock = _rl.RunLock("chrome_user_data", stale_minutes=20,
-                                             directory=HERE, log=log)
-            import time as _t
+            self._browser_lock = runlock.RunLock("chrome_user_data", stale_minutes=20,
+                                                 directory=HERE, log=log)
             if human:
                 try:
                     with open(HUMAN_FLAG, "w", encoding="utf-8") as _f:
-                        _f.write(str(_t.time()))
+                        _f.write(str(time.time()))
                 except Exception:
                     pass
             # A PERSON AT THE SCREEN GETS MORE PATIENCE THAN A CRON JOB.
@@ -313,7 +307,7 @@ class Microcat:
             for _ in range(max(1, int(wait_seconds // 5))):
                 if self._browser_lock.acquire():
                     break
-                _t.sleep(5)
+                time.sleep(5)
             if not self._browser_lock.acquired:
                 self._browser_lock = None
                 raise RuntimeError(busy_message())
@@ -1278,12 +1272,11 @@ def _carjam_chassis(v):
     website, and a Microcat pass must not fail because it was slow or down.
     """
     try:
-        import sys as _sys
         pc = os.path.join(os.path.dirname(HERE), "Automation_System",
                           "Partscheck Automation")
         pc = pc if os.path.isdir(pc) else os.path.join(HERE, "Partscheck Automation")
-        if pc not in _sys.path:
-            _sys.path.insert(0, pc)
+        if pc not in sys.path:
+            sys.path.insert(0, pc)
         import rego_lookup
         return rego_lookup.chassis_for(v)
     except Exception as e:
@@ -1683,9 +1676,8 @@ def best_match(description, rows, hint_pncs=()):
     # in trade_words so both chains share it, and a line that ASKS for a clip
     # or a badge is unaffected.
     try:
-        import trade_words as _twk
         _clean = [r for r in live
-                  if not _twk.pnc_is_wrong_kind(description, r.get("number"))]
+                  if not _tw.pnc_is_wrong_kind(description, r.get("number"))]
         if _clean:
             live = _clean
     except Exception:
@@ -1703,12 +1695,11 @@ def best_match(description, rows, hint_pncs=()):
     # in the illustration - so a car whose valance sits under a different
     # number is left to the scorer rather than answered with nothing.
     try:
-        import trade_words as _twp
         # PREFERENCE ORDER, not a single answer - the same trade wording is a
         # different PNC on a different generation of the same model, and the
         # car itself settles which. First PNC with rows in THIS illustration
         # wins; if none of them are here, the scorer is left alone.
-        for _want in _twp.pnc_by_phrase(description):
+        for _want in _tw.pnc_by_phrase(description):
             _hit = [r for r in live
                     if str(r.get("pnc") or r.get("number") or "")[:5] == _want]
             if _hit:
@@ -1775,7 +1766,6 @@ def best_match(description, rows, hint_pncs=()):
             if not first:
                 return False
             try:
-                import trade_words as _tw
                 nouns = set(_tw.PART_NOUNS)
             except Exception:
                 nouns = set()
@@ -1858,21 +1848,19 @@ def _route_off_microcat(req, make, ident, price):
     partfinder.validate() only ever reads results\\, so nothing downstream can
     mistake a routing note for a result.
     """
-    import datetime as _dt
-    import json as _j
-    import os as _o
     try:
         d = partfinder.REQ_DIR
-        if not d or not _o.path.isdir(d):
+        if not d or not os.path.isdir(d):
             return
-        p = _o.path.join(d, "%s.routed.json" % str(req.get("_job")))
-        if _o.path.exists(p):
+        p = os.path.join(d, "%s.routed.json" % str(req.get("_job")))
+        if os.path.exists(p):
             return                      # already routed - say it once, not every pass
         with open(p, "w", encoding="utf-8") as fh:
-            _j.dump({"job": req.get("_job"), "make": make,
-                     "identification": ident, "price": price,
-                     "reason": "Microcat is Toyota/Lexus only",
-                     "routed_at": _dt.datetime.now().isoformat()}, fh, indent=1)
+            json.dump({"job": req.get("_job"), "make": make,
+                       "identification": ident, "price": price,
+                       "reason": "Microcat is Toyota/Lexus only",
+                       "routed_at": datetime.datetime.now().isoformat()},
+                      fh, indent=1)
     except Exception:
         pass                            # routing is bookkeeping, never a blocker
 
@@ -2033,8 +2021,6 @@ def work_job(mc, req):
             wit.miss("learned", "no learned mapping for this wording")
             wit.ok("vin", "vehicle resolved") if vurl else wit.miss("vin", "no vehicle")
         m = PNC_RX.search(desc)
-        # A PNC is the 5-digit factory group ("52119"). Microcat searches it
-        # directly and it is a far better key than English, so it goes first.
         # PNC first (the 5-digit factory group is a far better key than any
         # English), then the description in Toyota's words, then the shop's own
         # words as written - each one only if the one before it came back empty.
@@ -2062,9 +2048,13 @@ def work_job(mc, req):
         #
         # pnc_lookup returns nothing when it does not know - and nothing means
         # "fall through to the word search", never a guess.
+        # 31 Oct 2026 (Morgan): asked ONCE per line. The verified-PNC check
+        # further down used to call pncs_for() again for the same answer.
+        _pnc_known = []
         try:
             import pnc_lookup as _pl
-            _first = [c for c, _why in _pl.pncs_for(desc)]
+            _pnc_known = list(_pl.pncs_for(desc))
+            _first = [c for c, _why in _pnc_known]
             if _first:
                 log(f"      {desc[:34]:36} -> PNC first: {', '.join(_first[:3])}")
                 hint_pncs = _first + [h for h in hint_pncs if h not in _first]
@@ -2169,8 +2159,7 @@ def work_job(mc, req):
         # PNC is FOR: it identifies the family, so the family's part is the part.
         _verified = []
         try:
-            import pnc_lookup as _pl
-            _verified = [c for c, why_ in _pl.pncs_for(desc) if why_.startswith("verified")]
+            _verified = [c for c, why_ in _pnc_known if why_.startswith("verified")]
         except Exception:
             pass
         for t in _verified:
