@@ -7,6 +7,14 @@ This is the script behind the **Find numbers (Microcat)** button on the parts
 desk. It takes a VIN and a part description and returns the Toyota part number.
 It does not open its own browser — it attaches to an existing Chrome.
 
+> **Update 31 Oct 2026 (Morgan), after merging the Arun branch.** Two notes below no longer match
+> the code. **Credentials come from `.env`** (`MICROCAT_USERNAME` / `MICROCAT_PASSWORD`, a real
+> environment variable wins; template `.env.example`), not `microcat_credentials.json`: the refusal
+> guard keys on when `.env` was saved, so the JSON reader could never lift a refusal. **The login
+> uses `fill()`**, not typed keystrokes (`_type_like_a_person()` was removed): there's no evidence
+> `fill()` causes refusals, and it shouldn't be changed just to get past Infomedia's bot check.
+> Read "microcat_credentials.json" below as ".env".
+
 ---
 
 ## How it works today
@@ -184,11 +192,12 @@ the whole script behaves consistently.
 
 ## Suggested order
 
-1. **Create `microcat_credentials.json`** (copy the EXAMPLE, fill it in) and
-   confirm the account still authenticates — this is the one that actually
-   stops auto sign-in working. Use the JSON file, not `.env` (see Conflict 2).
+1. **Create `.env`** (copy `.env.example`, fill it in) and confirm the account
+   still authenticates — this is the one that actually stops auto sign-in
+   working. (Updated 31 Oct 2026: `.env`, not the JSON file — see the note at the top.)
 2. ~~**Make a failed or skipped auto sign-in loud**~~ Done 30 Oct 2026 (see Conflict 2).
-3. ~~**Switch the login to typed keystrokes**~~ Done 30 Oct 2026 (see Conflict 3).
+3. **Switch the login to typed keystrokes** — reverted 31 Oct 2026, `fill()` kept
+   (see the note at the top). Revisit only if a real attempt shows the form ignores `fill()`.
 4. ~~**Fix the stale `signed_in()` docstring.**~~ Done 30 Oct 2026 (see Conflict 1).
 
 Item 1 is the one still open. 3 was a hypothesis, not a diagnosis, and the logs show
