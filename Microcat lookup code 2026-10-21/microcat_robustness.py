@@ -45,10 +45,14 @@ def classify(err, got, want):
     e = (err or "").lower()
     if "did not take" in e or "retyping" in e:
         return "search-race"
+    # BUSY BEFORE SIGNED OUT.  31 Oct 2026 (Morgan). busy_message() - what
+    # open() raises when another pass has the browser - says "one signed-in
+    # seat", so testing "sign" first filed a busy browser as signed-out, and
+    # sent whoever read the log off to fix a login that was fine.
+    if "lock" in e or "another pass" in e or "browser" in e or "busy" in e:
+        return "browser-taken"
     if "login" in e or "sign" in e:
         return "signed-out"
-    if "lock" in e or "another pass" in e or "browser" in e:
-        return "browser-taken"
     if err:
         return "error:" + (err.split(":")[0][:22] or "?")
     if not got:

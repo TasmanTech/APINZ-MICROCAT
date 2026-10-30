@@ -101,7 +101,11 @@ def find_numbers(job, human=True, force_microcat=False):
                           # agent reads, so a Lexus UX was handed over labelled
                           # "TOYOTA" and could be looked up in the wrong
                           # catalogue. Brendon, job 32764: "and is for Lexus".
-                          make=make or "TOYOTA", model=j.get("car", ""),
+                          # 31 Oct 2026 (Morgan): the `or "TOYOTA"` fallback was
+                          # the same bug for a job with NO make - an unknown car
+                          # handed over labelled TOYOTA. Blank stays blank; the
+                          # VIN is what identifies the car in Microcat.
+                          make=make, model=j.get("car", ""),
                           source="partly_desk")
         core.log(job, f"FINDER asked Microcat for {len(todo)} line(s) as {pfjob}")
         # A PERSON PRESSED A BUTTON.  29 Sep 2026.
@@ -140,15 +144,24 @@ def find_numbers(job, human=True, force_microcat=False):
             # Returning here also means the loop below can no longer run with
             # problems set - which is what used to throw away genuinely CONFIRMED
             # rows because of an unrelated problem on some other line.
-            busy = any("no result yet" in p for p in problems)
+            #
+            # 31 Oct 2026 (Morgan): "no result yet" also covers a pass that
+            # STOPPED - signed out, or the API HELPER window not there - and
+            # telling that person "another pass had the browser, press again"
+            # sends them round in a loop only signing in can break. run()
+            # leaves the real reason in LAST_STOP; it wins over the busy guess.
+            stopped = getattr(mr, "LAST_STOP", "")
+            busy = not stopped and any("no result yet" in p for p in problems)
             for l in todo:
                 l.setdefault("notes", {})["finder"] = (
                     "Microcat has NOT looked at this line yet - "
-                    + ("another Microcat pass had the browser. Press Find numbers "
+                    + ("Microcat stopped: " + stopped[:120] if stopped else
+                       "another Microcat pass had the browser. Press Find numbers "
                        "again in a minute." if busy else "; ".join(problems[:2])))
             out["unanswered"] = len(todo)
             out["error"] = ("Microcat did NOT answer - nothing was searched. "
-                            + (mr.busy_message() if busy else "; ".join(problems[:3])))
+                            + ("Microcat stopped: " + stopped if stopped else
+                               mr.busy_message() if busy else "; ".join(problems[:3])))
             core.save_job(j)
             core.log(job, f"FINDER NOT ANSWERED {pfjob}: {out['error']}")
             core.run_system(j)
@@ -180,81 +193,83 @@ def find_numbers(job, human=True, force_microcat=False):
     return out
 
 
-def _body_details(j):
-    """make / model / body / year for a body-type lookup, or None if short.
+# 31 Oct 2026 (Morgan): BODY-TYPE LOOKUP SWITCHED OFF FOR NOW - VIN search only.
+# Commented out, not deleted, so it can come back with its button.
+# def _body_details(j):
+#     """make / model / body / year for a body-type lookup, or None if short.
 
-    28 Oct 2026: WHICH JOB FIELDS HOLD BODY TYPE AND YEAR IS NOT CONFIRMED YET.
-    "body" and "year" below are placeholders until desk_core's job fields are
-    checked - this is the one place to change when they are. Missing any of
-    the four means no lookup, never a guess."""
-    v = {"make": (core.vehicle_make(j) or "").upper(),
-         "model": str(j.get("car") or "").strip(),
-         "body": str(j.get("body") or "").strip(),
-         "year": str(j.get("year") or "").strip()}
-    return v if all(v.values()) else None
+#     28 Oct 2026: WHICH JOB FIELDS HOLD BODY TYPE AND YEAR IS NOT CONFIRMED YET.
+#     "body" and "year" below are placeholders until desk_core's job fields are
+#     checked - this is the one place to change when they are. Missing any of
+#     the four means no lookup, never a guess."""
+#     v = {"make": (core.vehicle_make(j) or "").upper(),
+#          "model": str(j.get("car") or "").strip(),
+#          "body": str(j.get("body") or "").strip(),
+#          "year": str(j.get("year") or "").strip()}
+#     return v if all(v.values()) else None
 
 
-def find_numbers_by_body(job):
-    """THE NO-VIN BUTTON: "Find numbers (body type)".  28 Oct 2026.
+# def find_numbers_by_body(job):
+#     """THE NO-VIN BUTTON: "Find numbers (body type)".  28 Oct 2026.
 
-    Morgan, 28 Oct 2026: a body-type lookup for quotes with no VIN, on its OWN
-    button. It never fills in a number. Without a VIN Microcat cannot apply
-    build date or model code, so everything it finds goes to the yellow Confirm
-    box for a person - the same rule as PROPOSED everywhere else. A job WITH a
-    VIN is sent back to the Microcat button, which is the better answer.
-    """
-    j = core.load_job(job)
-    if j.get("vin"):
-        return {"asked": 0, "error": "This job has a VIN - use Find numbers (Microcat). "
-                                     "The body-type lookup is only for quotes with no VIN."}
-    make = (core.vehicle_make(j) or "").upper()
-    if make and make not in MICROCAT_MAKES:
-        return {"asked": 0, "error":
-                f"Microcat only holds Toyota and Lexus - it cannot identify a {make}. "
-                f"Nothing was asked and no line has been marked NOT FOUND."}
-    vehicle = _body_details(j)
-    if not vehicle:
-        return {"asked": 0, "error": "Not enough vehicle detail for a body-type lookup - "
-                                     "it needs make, model, body type and year. "
-                                     "Nothing was asked."}
-    need = [l for l in j["lines"] if not core.pn_of(l) and not l.get("kit")]
-    if not need:
-        return {"asked": 0, "note": "every line already has a number"}
-    _pf, mr = _engine()
-    pdjob = f"PB{job}_{datetime.datetime.now():%H%M%S}"
-    core.log(job, f"FINDER (body type) asked Microcat for {len(need)} line(s) as {pdjob}")
-    res = mr.run_by_body(pdjob, vehicle,
-                         [{"line": str(l["n"]), "description": l["description"], "qty": l["qty"]}
-                          for l in need])
-    out = {"asked": len(need), "confirmed": 0, "proposed": 0, "not_found": 0}
-    if res.get("error"):
-        # NOT SEARCHED IS NOT NOT FOUND - the same rule as find_numbers().
-        for l in need:
-            l.setdefault("notes", {})["finder"] = ("Body-type lookup has NOT looked at this "
-                                                   "line yet - " + res["error"][:160])
-        out["unanswered"] = len(need)
-        out["error"] = "Body-type lookup did NOT run - nothing was searched. " + res["error"]
-        core.save_job(j)
-        core.log(job, f"FINDER (body type) NOT ANSWERED {pdjob}: {res['error'][:160]}")
-        return out
-    rows = {str(r.get("line")): r for r in res.get("rows") or []}
-    for l in need:
-        r = rows.get(str(l["n"])) or {}
-        conf, num = str(r.get("confidence", "")).upper(), str(r.get("oem_no") or "").strip()
-        note = str(r.get("note") or "")[:160]
-        # Only PROPOSED can come back from run_by_body(); anything else with a
-        # number is treated as PROPOSED too, so this button can never fill one in.
-        if num and conf != "NOT_FOUND":
-            if not core.pn_of(l):
-                core.apply_proposal(l, num, f"Body-type lookup offered {num}. {note}")
-            l.setdefault("notes", {})["finder"] = (f"Body type (no VIN) PROPOSES {num} - "
-                                                   f"press Confirm if right. {note}").strip()
-            out["proposed"] += 1
-        else:
-            l.setdefault("notes", {})["finder"] = ("Body type (no VIN): NOT FOUND. "
-                                                   + note).strip()
-            out["not_found"] += 1
-    core.save_job(j)
-    core.log(job, f"FINDER (body type) {out}")
-    core.run_system(j)
-    return out
+#     Morgan, 28 Oct 2026: a body-type lookup for quotes with no VIN, on its OWN
+#     button. It never fills in a number. Without a VIN Microcat cannot apply
+#     build date or model code, so everything it finds goes to the yellow Confirm
+#     box for a person - the same rule as PROPOSED everywhere else. A job WITH a
+#     VIN is sent back to the Microcat button, which is the better answer.
+#     """
+#     j = core.load_job(job)
+#     if j.get("vin"):
+#         return {"asked": 0, "error": "This job has a VIN - use Find numbers (Microcat). "
+#                                      "The body-type lookup is only for quotes with no VIN."}
+#     make = (core.vehicle_make(j) or "").upper()
+#     if make and make not in MICROCAT_MAKES:
+#         return {"asked": 0, "error":
+#                 f"Microcat only holds Toyota and Lexus - it cannot identify a {make}. "
+#                 f"Nothing was asked and no line has been marked NOT FOUND."}
+#     vehicle = _body_details(j)
+#     if not vehicle:
+#         return {"asked": 0, "error": "Not enough vehicle detail for a body-type lookup - "
+#                                      "it needs make, model, body type and year. "
+#                                      "Nothing was asked."}
+#     need = [l for l in j["lines"] if not core.pn_of(l) and not l.get("kit")]
+#     if not need:
+#         return {"asked": 0, "note": "every line already has a number"}
+#     _pf, mr = _engine()
+#     pdjob = f"PB{job}_{datetime.datetime.now():%H%M%S}"
+#     core.log(job, f"FINDER (body type) asked Microcat for {len(need)} line(s) as {pdjob}")
+#     res = mr.run_by_body(pdjob, vehicle,
+#                          [{"line": str(l["n"]), "description": l["description"], "qty": l["qty"]}
+#                           for l in need])
+#     out = {"asked": len(need), "confirmed": 0, "proposed": 0, "not_found": 0}
+#     if res.get("error"):
+#         # NOT SEARCHED IS NOT NOT FOUND - the same rule as find_numbers().
+#         for l in need:
+#             l.setdefault("notes", {})["finder"] = ("Body-type lookup has NOT looked at this "
+#                                                    "line yet - " + res["error"][:160])
+#         out["unanswered"] = len(need)
+#         out["error"] = "Body-type lookup did NOT run - nothing was searched. " + res["error"]
+#         core.save_job(j)
+#         core.log(job, f"FINDER (body type) NOT ANSWERED {pdjob}: {res['error'][:160]}")
+#         return out
+#     rows = {str(r.get("line")): r for r in res.get("rows") or []}
+#     for l in need:
+#         r = rows.get(str(l["n"])) or {}
+#         conf, num = str(r.get("confidence", "")).upper(), str(r.get("oem_no") or "").strip()
+#         note = str(r.get("note") or "")[:160]
+#         # Only PROPOSED can come back from run_by_body(); anything else with a
+#         # number is treated as PROPOSED too, so this button can never fill one in.
+#         if num and conf != "NOT_FOUND":
+#             if not core.pn_of(l):
+#                 core.apply_proposal(l, num, f"Body-type lookup offered {num}. {note}")
+#             l.setdefault("notes", {})["finder"] = (f"Body type (no VIN) PROPOSES {num} - "
+#                                                    f"press Confirm if right. {note}").strip()
+#             out["proposed"] += 1
+#         else:
+#             l.setdefault("notes", {})["finder"] = ("Body type (no VIN): NOT FOUND. "
+#                                                    + note).strip()
+#             out["not_found"] += 1
+#     core.save_job(j)
+#     core.log(job, f"FINDER (body type) {out}")
+#     core.run_system(j)
+#     return out
